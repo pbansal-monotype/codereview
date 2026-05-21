@@ -19,9 +19,11 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 function buildSystemPrompt(config: ReviewConfig): string {
   let prompt = `You are an expert code reviewer for enterprise pull requests.
+You are given both the diff (what changed) and the full contents of changed files (for context).
+Use the full file contents to understand the surrounding code, imports, types, and how the change fits into the codebase.
 Review the diff against ALL provided category guidelines in a single pass.
 Be concise, specific, and reference file paths and line numbers when possible.
-Do NOT repeat the diff. Focus only on actionable findings.
+Do NOT repeat the diff or file contents. Focus only on actionable findings.
 
 ${getJsonOutputInstruction()}`;
 
@@ -61,8 +63,19 @@ function buildCombinedPrompt(
     prompt += `\n### ${label} (category id: "${id}")\n${guidelines.guidelines}\n`;
   }
 
-  prompt += `\n## Diff\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
-  prompt += `\nReview the diff for every category above. Return JSON with findings tagged by category id. Include "file" and "line" fields wherever possible so findings can be posted as inline comments.`;
+  // Full file contents for context
+  if (pr.fileContents.length > 0) {
+    prompt += `\n## File Contents (full context)\n`;
+    prompt += `Use these to understand the complete code structure, imports, types, and surrounding logic.\n\n`;
+    for (const file of pr.fileContents) {
+      const ext = file.path.slice(file.path.lastIndexOf('.') + 1);
+      prompt += `### ${file.path}${file.truncated ? ' (truncated)' : ''}\n`;
+      prompt += `\`\`\`${ext}\n${file.content}\n\`\`\`\n\n`;
+    }
+  }
+
+  prompt += `\n## Diff (what changed)\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
+  prompt += `\nReview the diff for every category above. Use the full file contents for context but focus findings on the changed lines. Return JSON with findings tagged by category id. Include "file" and "line" fields wherever possible so findings can be posted as inline comments.`;
 
   return prompt;
 }

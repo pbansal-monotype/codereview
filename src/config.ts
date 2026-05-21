@@ -30,6 +30,9 @@ export interface ReviewConfig {
   ignorePatterns: string[];
   redactSecrets: boolean;
   timeoutMs: number;
+  includeFileContents: boolean;
+  contextFiles: string[];
+  maxFileSize: number;
 }
 
 const DEFAULT_MODELS: Record<string, string> = {
@@ -203,6 +206,20 @@ export function loadConfig(): ReviewConfig {
       true,
     ),
     timeoutMs: timeoutSec * 1000,
+    includeFileContents: bool(
+      core.getInput('include_file_contents') || fileConfig.include_file_contents,
+      true,
+    ),
+    contextFiles: (
+      core.getInput('context_files') || str(fileConfig.context_files)
+    )
+      .split(',')
+      .map((f) => f.trim())
+      .filter(Boolean),
+    maxFileSize: parseInt(
+      core.getInput('max_file_size') || str(fileConfig.max_file_size) || '10000',
+      10,
+    ),
   };
 }
 

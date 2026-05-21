@@ -4,6 +4,12 @@ import { filterDiffByFiles, shouldIgnoreFile } from './ignore';
 import { parseDiffForCommentTargets } from './diff-parser';
 import { Finding } from './findings';
 
+export interface FileContent {
+  path: string;
+  content: string;
+  truncated: boolean;
+}
+
 export interface PullRequestData {
   number: number;
   title: string;
@@ -16,12 +22,16 @@ export interface PullRequestData {
   reviewedFiles: string[];
   ignoredFiles: string[];
   redactionCount: number;
+  fileContents: FileContent[];
 }
 
 export interface FetchPROptions {
   maxDiffSize: number;
   ignorePatterns: string[];
   redactSecrets: boolean;
+  contextFiles: string[];
+  includeFileContents: boolean;
+  maxFileSize: number;
 }
 
 async function listAllChangedFiles(
@@ -119,6 +129,27 @@ export async function getPullRequestData(
     core.warning('No reviewable files after applying ignore patterns.');
   }
 
+  // Fetch full file contents for changed files + explicit context files
+  let fileContents: FileContent[] = [];
+  if (options.includeFileContents) {
+    const filesToFetch = new Set([
+      ...reviewedFiles,
+      ...options.contextFiles,
+    ]);
+    fileContents = await fetchFileContents(
+      octokit,
+      owner,
+      repo,
+      pr.head.ref,
+      filesToFetch,
+      options.maxFileSize,
+      options.redactSecrets,
+    );
+    core.info(
+      `Fetched ${fileContents.length} file(s) for full context (${fileContents.filter((f) => f.truncated).length} truncated)`,
+    );
+  }
+
   return {
     number: prNumber,
     title: pr.title,
@@ -131,6 +162,7 @@ export async function getPullRequestData(
     reviewedFiles,
     ignoredFiles,
     redactionCount,
+    fileContents,
   };
 }
 
@@ -174,6 +206,63 @@ function smartTruncateDiff(diff: string, maxSize: number): string {
     result += `\n\n... [${skipped.length} file(s) truncated: ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '...' : ''}] ...`;
   }
   return result;
+}
+
+// ─── File content fetching ──────────────────────────────────────────
+
+const BINARY_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.svg',
+  '.woff', '.woff2', '.ttf', '.eot',
+  '.pdf', '.zip', '.tar', '.gz', '.br',
+  '.mp3', '.mp4', '.mov', '.avi',
+  '.wasm', '.pyc', '.class', '.o', '.so', '.dll',
+]);
+
+async function fetchFileContents(
+  octokit: ReturnType<typeof github.getOctokit>,
+  owner: string,
+  repo: string,
+  ref: string,
+  files: Set<string>,
+  maxFileSize: number,
+  redactSecretsEnabled: boolean,
+): Promise<FileContent[]> {
+  const results: FileContent[] = [];
+
+  for (const filePath of files) {
+    const ext = filePath.slice(filePath.lastIndexOf('.'));
+    if (BINARY_EXTENSIONS.has(ext.toLowerCase())) continue;
+
+    try {
+      const { data } = await octokit.rest.repos.getContent({
+        owner,
+        repo,
+        path: filePath,
+        ref,
+      });
+
+      if (!('content' in data) || data.type !== 'file') continue;
+
+      let content = Buffer.from(data.content, 'base64').toString('utf-8');
+      let truncated = false;
+
+      if (content.length > maxFileSize) {
+        content = content.slice(0, maxFileSize) + '\n// ... [file truncated] ...';
+        truncated = true;
+      }
+
+      if (redactSecretsEnabled) {
+        const { redactSecrets } = await import('./redact');
+        content = redactSecrets(content);
+      }
+
+      results.push({ path: filePath, content, truncated });
+    } catch {
+      // File might not exist on the head branch (deleted file) — skip
+    }
+  }
+
+  return results;
 }
 
 // ─── Comment posting ────────────────────────────────────────────────

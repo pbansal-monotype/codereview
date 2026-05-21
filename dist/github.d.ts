@@ -1,4 +1,9 @@
 import { Finding } from './findings';
+export interface FileContent {
+    path: string;
+    content: string;
+    truncated: boolean;
+}
 export interface PullRequestData {
     number: number;
     title: string;
@@ -11,11 +16,15 @@ export interface PullRequestData {
     reviewedFiles: string[];
     ignoredFiles: string[];
     redactionCount: number;
+    fileContents: FileContent[];
 }
 export interface FetchPROptions {
     maxDiffSize: number;
     ignorePatterns: string[];
     redactSecrets: boolean;
+    contextFiles: string[];
+    includeFileContents: boolean;
+    maxFileSize: number;
 }
 export declare function getPullRequestData(token: string, options: FetchPROptions): Promise<PullRequestData>;
 export declare function postReviewComment(token: string, prNumber: number, body: string): Promise<void>;

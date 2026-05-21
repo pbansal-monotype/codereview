@@ -126,7 +126,10 @@ PR opened/updated
   Smart-truncate if diff exceeds budget (source code first)
        |
        v
-  Send to AI with all category guidelines in a single call
+  Fetch full contents of changed files (for context)
+       |
+       v
+  Send diff + file contents + guidelines to AI in a single call
        |
        v
   Parse structured JSON response
@@ -160,6 +163,9 @@ PR opened/updated
 | `ignore_paths` | No | — | Extra globs to skip (e.g. `**/migrations/**`) |
 | `redact_secrets` | No | `true` | Redact secrets before sending diff to AI |
 | `timeout` | No | `120` | Timeout in seconds per AI API call |
+| `include_file_contents` | No | `true` | Send full file contents alongside diff for better context |
+| `context_files` | No | — | Extra files to always include (e.g. `src/types.ts,src/db/schema.prisma`) |
+| `max_file_size` | No | `10000` | Max characters per file when including contents |
 | `config_path` | No | `.github/pr-review-config.yml` | Path to optional config file (see below) |
 
 > **`custom_prompt` vs `extra_instructions`**
@@ -227,7 +233,7 @@ PR opened/updated
       - Breaking changes require a version bump
 ```
 
-### Summary comment only (no inline)
+### Always include key files for context
 
 ```yaml
 - uses: your-org/ai-pr-reviewer@v1
@@ -235,7 +241,18 @@ PR opened/updated
     provider: 'anthropic'
     api_key: ${{ secrets.ANTHROPIC_API_KEY }}
     github_token: ${{ secrets.GITHUB_TOKEN }}
-    post_inline_comments: 'false'
+    context_files: 'src/types.ts,src/middleware/auth.ts,prisma/schema.prisma'
+```
+
+### Diff-only mode (no file contents, lower cost)
+
+```yaml
+- uses: your-org/ai-pr-reviewer@v1
+  with:
+    provider: 'anthropic'
+    api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    include_file_contents: 'false'
 ```
 
 ## Optional: external config file

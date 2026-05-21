@@ -21,6 +21,9 @@ async function main(): Promise<void> {
       maxDiffSize: config.maxDiffSize,
       ignorePatterns: config.ignorePatterns,
       redactSecrets: config.redactSecrets,
+      contextFiles: config.contextFiles,
+      includeFileContents: config.includeFileContents,
+      maxFileSize: config.maxFileSize,
     });
     core.info(
       `PR #${pr.number}: "${pr.title}" (${pr.reviewedFiles.length} files to review)`,

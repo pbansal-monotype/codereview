@@ -35813,6 +35813,12 @@ function loadConfig() {
         ignorePatterns: (0, ignore_1.parseIgnorePatterns)(ignoreInput),
         redactSecrets: bool(core.getInput('redact_secrets') || fileConfig.redact_secrets, true),
         timeoutMs: timeoutSec * 1000,
+        includeFileContents: bool(core.getInput('include_file_contents') || fileConfig.include_file_contents, true),
+        contextFiles: (core.getInput('context_files') || str(fileConfig.context_files))
+            .split(',')
+            .map((f) => f.trim())
+            .filter(Boolean),
+        maxFileSize: parseInt(core.getInput('max_file_size') || str(fileConfig.max_file_size) || '10000', 10),
     };
 }
 function getJsonOutputInstruction() {
@@ -36133,6 +36139,16 @@ async function getPullRequestData(token, options) {
     if (reviewedFiles.length === 0) {
         core.warning('No reviewable files after applying ignore patterns.');
     }
+    // Fetch full file contents for changed files + explicit context files
+    let fileContents = [];
+    if (options.includeFileContents) {
+        const filesToFetch = new Set([
+            ...reviewedFiles,
+            ...options.contextFiles,
+        ]);
+        fileContents = await fetchFileContents(octokit, owner, repo, pr.head.ref, filesToFetch, options.maxFileSize, options.redactSecrets);
+        core.info(`Fetched ${fileContents.length} file(s) for full context (${fileContents.filter((f) => f.truncated).length} truncated)`);
+    }
     return {
         number: prNumber,
         title: pr.title,
@@ -36145,6 +36161,7 @@ async function getPullRequestData(token, options) {
         reviewedFiles,
         ignoredFiles,
         redactionCount,
+        fileContents,
     };
 }
 /**
@@ -36184,6 +36201,47 @@ function smartTruncateDiff(diff, maxSize) {
         result += `\n\n... [${skipped.length} file(s) truncated: ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '...' : ''}] ...`;
     }
     return result;
+}
+// ─── File content fetching ──────────────────────────────────────────
+const BINARY_EXTENSIONS = new Set([
+    '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.svg',
+    '.woff', '.woff2', '.ttf', '.eot',
+    '.pdf', '.zip', '.tar', '.gz', '.br',
+    '.mp3', '.mp4', '.mov', '.avi',
+    '.wasm', '.pyc', '.class', '.o', '.so', '.dll',
+]);
+async function fetchFileContents(octokit, owner, repo, ref, files, maxFileSize, redactSecretsEnabled) {
+    const results = [];
+    for (const filePath of files) {
+        const ext = filePath.slice(filePath.lastIndexOf('.'));
+        if (BINARY_EXTENSIONS.has(ext.toLowerCase()))
+            continue;
+        try {
+            const { data } = await octokit.rest.repos.getContent({
+                owner,
+                repo,
+                path: filePath,
+                ref,
+            });
+            if (!('content' in data) || data.type !== 'file')
+                continue;
+            let content = Buffer.from(data.content, 'base64').toString('utf-8');
+            let truncated = false;
+            if (content.length > maxFileSize) {
+                content = content.slice(0, maxFileSize) + '\n// ... [file truncated] ...';
+                truncated = true;
+            }
+            if (redactSecretsEnabled) {
+                const { redactSecrets } = await Promise.resolve().then(() => __importStar(__nccwpck_require__(6670)));
+                content = redactSecrets(content);
+            }
+            results.push({ path: filePath, content, truncated });
+        }
+        catch {
+            // File might not exist on the head branch (deleted file) — skip
+        }
+    }
+    return results;
 }
 // ─── Comment posting ────────────────────────────────────────────────
 async function postReviewComment(token, prNumber, body) {
@@ -36440,6 +36498,9 @@ async function main() {
             maxDiffSize: config.maxDiffSize,
             ignorePatterns: config.ignorePatterns,
             redactSecrets: config.redactSecrets,
+            contextFiles: config.contextFiles,
+            includeFileContents: config.includeFileContents,
+            maxFileSize: config.maxFileSize,
         });
         core.info(`PR #${pr.number}: "${pr.title}" (${pr.reviewedFiles.length} files to review)`);
         const result = await (0, review_1.runReview)(provider, config, pr);
@@ -36770,9 +36831,11 @@ const CATEGORY_LABELS = {
 };
 function buildSystemPrompt(config) {
     let prompt = `You are an expert code reviewer for enterprise pull requests.
+You are given both the diff (what changed) and the full contents of changed files (for context).
+Use the full file contents to understand the surrounding code, imports, types, and how the change fits into the codebase.
 Review the diff against ALL provided category guidelines in a single pass.
 Be concise, specific, and reference file paths and line numbers when possible.
-Do NOT repeat the diff. Focus only on actionable findings.
+Do NOT repeat the diff or file contents. Focus only on actionable findings.
 
 ${(0, config_1.getJsonOutputInstruction)()}`;
     if (config.extraInstructions) {
@@ -36800,8 +36863,18 @@ function buildCombinedPrompt(activeCategories, pr, config) {
         const label = CATEGORY_LABELS[id] || id;
         prompt += `\n### ${label} (category id: "${id}")\n${guidelines.guidelines}\n`;
     }
-    prompt += `\n## Diff\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
-    prompt += `\nReview the diff for every category above. Return JSON with findings tagged by category id. Include "file" and "line" fields wherever possible so findings can be posted as inline comments.`;
+    // Full file contents for context
+    if (pr.fileContents.length > 0) {
+        prompt += `\n## File Contents (full context)\n`;
+        prompt += `Use these to understand the complete code structure, imports, types, and surrounding logic.\n\n`;
+        for (const file of pr.fileContents) {
+            const ext = file.path.slice(file.path.lastIndexOf('.') + 1);
+            prompt += `### ${file.path}${file.truncated ? ' (truncated)' : ''}\n`;
+            prompt += `\`\`\`${ext}\n${file.content}\n\`\`\`\n\n`;
+        }
+    }
+    prompt += `\n## Diff (what changed)\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
+    prompt += `\nReview the diff for every category above. Use the full file contents for context but focus findings on the changed lines. Return JSON with findings tagged by category id. Include "file" and "line" fields wherever possible so findings can be posted as inline comments.`;
     return prompt;
 }
 async function runReview(provider, config, pr) {

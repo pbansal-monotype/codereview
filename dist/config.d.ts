@@ -23,6 +23,9 @@ export interface ReviewConfig {
     ignorePatterns: string[];
     redactSecrets: boolean;
     timeoutMs: number;
+    includeFileContents: boolean;
+    contextFiles: string[];
+    maxFileSize: number;
 }
 export declare function loadConfig(): ReviewConfig;
 export declare function getJsonOutputInstruction(): string;
