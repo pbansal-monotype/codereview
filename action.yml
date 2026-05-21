@@ -57,22 +57,27 @@ inputs:
     default: ''
 
   custom_prompt:
-    description: 'Additional custom prompt text sent to the AI alongside the review'
+    description: 'Repo-specific context sent with the review (tech stack, architecture, conventions)'
     required: false
     default: ''
 
   extra_instructions:
-    description: 'Free-form text appended to every AI call (company-wide policies, tone, etc.)'
+    description: 'Company-wide policies appended to the system prompt (tone, standards, compliance rules)'
     required: false
     default: ''
 
   max_diff_size:
-    description: 'Maximum diff size in characters before truncation (default 60000)'
+    description: 'Maximum diff size in characters before smart truncation (default 60000)'
     required: false
     default: '60000'
 
   post_review_comment:
-    description: 'Whether to post the review as a PR comment (true/false)'
+    description: 'Post the review summary as a PR comment (true/false)'
+    required: false
+    default: 'true'
+
+  post_inline_comments:
+    description: 'Post inline review comments on specific diff lines (true/false)'
     required: false
     default: 'true'
 
@@ -90,6 +95,11 @@ inputs:
     description: 'Redact potential secrets from diff before sending to AI (true/false)'
     required: false
     default: 'true'
+
+  timeout:
+    description: 'Timeout in seconds for each AI API call (default 120)'
+    required: false
+    default: '120'
 
 outputs:
   review_body:

@@ -25,9 +25,11 @@ export interface ReviewConfig {
   extraInstructions: string;
   maxDiffSize: number;
   postReviewComment: boolean;
+  postInlineComments: boolean;
   failOnCritical: boolean;
   ignorePatterns: string[];
   redactSecrets: boolean;
+  timeoutMs: number;
 }
 
 const DEFAULT_MODELS: Record<string, string> = {
@@ -84,13 +86,13 @@ You MUST respond with valid JSON only (no markdown fences). Schema:
     {
       "category": "<category_id>",
       "severity": "critical" | "warning" | "suggestion",
-      "file": "optional/path.ts",
+      "file": "path/to/file.ts",
       "line": 42,
       "message": "Clear, actionable description"
     }
   ]
 }
-If no issues for a category, omit findings for that category. Use severity "critical" only for issues that must block merge.`;
+If no issues for a category, omit findings for that category. Use severity "critical" only for issues that must block merge. Always include "file" and "line" when possible.`;
 
 function loadConfigFile(configPath: string): Record<string, unknown> {
   const fullPath = path.resolve(process.cwd(), configPath);
@@ -155,6 +157,11 @@ export function loadConfig(): ReviewConfig {
   const ignoreInput =
     core.getInput('ignore_paths') || str(fileConfig.ignore_paths);
 
+  const timeoutSec = parseInt(
+    core.getInput('timeout') || str(fileConfig.timeout) || '120',
+    10,
+  );
+
   return {
     provider,
     apiKey: core.getInput('api_key', { required: true }),
@@ -182,6 +189,10 @@ export function loadConfig(): ReviewConfig {
       core.getInput('post_review_comment') || fileConfig.post_review_comment,
       true,
     ),
+    postInlineComments: bool(
+      core.getInput('post_inline_comments') || fileConfig.post_inline_comments,
+      true,
+    ),
     failOnCritical: bool(
       core.getInput('fail_on_critical') || fileConfig.fail_on_critical,
       false,
@@ -191,6 +202,7 @@ export function loadConfig(): ReviewConfig {
       core.getInput('redact_secrets') || fileConfig.redact_secrets,
       true,
     ),
+    timeoutMs: timeoutSec * 1000,
   };
 }
 

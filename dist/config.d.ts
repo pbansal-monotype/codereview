@@ -18,9 +18,11 @@ export interface ReviewConfig {
     extraInstructions: string;
     maxDiffSize: number;
     postReviewComment: boolean;
+    postInlineComments: boolean;
     failOnCritical: boolean;
     ignorePatterns: string[];
     redactSecrets: boolean;
+    timeoutMs: number;
 }
 export declare function loadConfig(): ReviewConfig;
 export declare function getJsonOutputInstruction(): string;

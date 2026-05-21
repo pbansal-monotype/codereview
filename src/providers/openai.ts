@@ -26,8 +26,8 @@ export class OpenAIProvider implements AIProvider {
     );
 
     const text = response.choices[0]?.message?.content ?? '';
-    const tokensUsed =
-      (response.usage?.prompt_tokens ?? 0) + (response.usage?.completion_tokens ?? 0);
+    const inputTokens = response.usage?.prompt_tokens ?? 0;
+    const outputTokens = response.usage?.completion_tokens ?? 0;
 
     let structured;
     try {
@@ -36,6 +36,12 @@ export class OpenAIProvider implements AIProvider {
       // Fallback to raw text
     }
 
-    return { review: text, structured, tokensUsed };
+    return {
+      review: text,
+      structured,
+      tokensUsed: inputTokens + outputTokens,
+      inputTokens,
+      outputTokens,
+    };
   }
 }

@@ -9,6 +9,8 @@ export interface ReviewResponse {
   review: string;
   structured?: StructuredReview;
   tokensUsed: number;
+  inputTokens: number;
+  outputTokens: number;
 }
 
 export interface AIProvider {

@@ -2,12 +2,14 @@ export interface RetryOptions {
   maxAttempts: number;
   baseDelayMs: number;
   maxDelayMs: number;
+  timeoutMs: number;
 }
 
 const DEFAULT_RETRY: RetryOptions = {
   maxAttempts: 3,
   baseDelayMs: 1000,
   maxDelayMs: 15000,
+  timeoutMs: 120_000,
 };
 
 function isRetryable(err: unknown): boolean {
@@ -28,6 +30,18 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  if (ms <= 0) return promise;
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Request timed out after ${ms}ms`)),
+      ms,
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer!));
+}
+
 export async function withRetry<T>(
   fn: () => Promise<T>,
   options: Partial<RetryOptions> = {},
@@ -37,7 +51,7 @@ export async function withRetry<T>(
 
   for (let attempt = 1; attempt <= opts.maxAttempts; attempt++) {
     try {
-      return await fn();
+      return await withTimeout(fn(), opts.timeoutMs);
     } catch (err) {
       lastError = err;
       if (attempt >= opts.maxAttempts || !isRetryable(err)) throw err;

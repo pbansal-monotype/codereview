@@ -35733,13 +35733,13 @@ You MUST respond with valid JSON only (no markdown fences). Schema:
     {
       "category": "<category_id>",
       "severity": "critical" | "warning" | "suggestion",
-      "file": "optional/path.ts",
+      "file": "path/to/file.ts",
       "line": 42,
       "message": "Clear, actionable description"
     }
   ]
 }
-If no issues for a category, omit findings for that category. Use severity "critical" only for issues that must block merge.`;
+If no issues for a category, omit findings for that category. Use severity "critical" only for issues that must block merge. Always include "file" and "line" when possible.`;
 function loadConfigFile(configPath) {
     const fullPath = path.resolve(process.cwd(), configPath);
     if (!fs.existsSync(fullPath)) {
@@ -35788,6 +35788,7 @@ function loadConfig() {
         };
     }
     const ignoreInput = core.getInput('ignore_paths') || str(fileConfig.ignore_paths);
+    const timeoutSec = parseInt(core.getInput('timeout') || str(fileConfig.timeout) || '120', 10);
     return {
         provider,
         apiKey: core.getInput('api_key', { required: true }),
@@ -35807,13 +35808,118 @@ function loadConfig() {
         extraInstructions: core.getInput('extra_instructions') || str(fileConfig.extra_instructions),
         maxDiffSize: parseInt(core.getInput('max_diff_size') || str(fileConfig.max_diff_size) || '60000', 10),
         postReviewComment: bool(core.getInput('post_review_comment') || fileConfig.post_review_comment, true),
+        postInlineComments: bool(core.getInput('post_inline_comments') || fileConfig.post_inline_comments, true),
         failOnCritical: bool(core.getInput('fail_on_critical') || fileConfig.fail_on_critical, false),
         ignorePatterns: (0, ignore_1.parseIgnorePatterns)(ignoreInput),
         redactSecrets: bool(core.getInput('redact_secrets') || fileConfig.redact_secrets, true),
+        timeoutMs: timeoutSec * 1000,
     };
 }
 function getJsonOutputInstruction() {
     return JSON_OUTPUT_INSTRUCTION;
+}
+
+
+/***/ }),
+
+/***/ 8666:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/**
+ * Approximate cost estimation for AI provider calls.
+ * Prices in USD per million tokens — updated periodically, not guaranteed exact.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.estimateCost = estimateCost;
+const RATES = [
+    // Anthropic
+    { pattern: 'claude-sonnet-4', rate: { input: 3, output: 15 } },
+    { pattern: 'claude-3-5-sonnet', rate: { input: 3, output: 15 } },
+    { pattern: 'claude-3-5-haiku', rate: { input: 0.8, output: 4 } },
+    { pattern: 'claude-3-haiku', rate: { input: 0.25, output: 1.25 } },
+    { pattern: 'claude-3-opus', rate: { input: 15, output: 75 } },
+    // OpenAI
+    { pattern: 'gpt-4o-mini', rate: { input: 0.15, output: 0.6 } },
+    { pattern: 'gpt-4o', rate: { input: 2.5, output: 10 } },
+    { pattern: 'gpt-4-turbo', rate: { input: 10, output: 30 } },
+    { pattern: 'gpt-4', rate: { input: 30, output: 60 } },
+    { pattern: 'o1-mini', rate: { input: 3, output: 12 } },
+    { pattern: 'o1', rate: { input: 15, output: 60 } },
+];
+function estimateCost(model, inputTokens, outputTokens) {
+    const match = RATES.find((r) => model.includes(r.pattern));
+    if (!match)
+        return null;
+    const cost = (inputTokens * match.rate.input + outputTokens * match.rate.output) / 1_000_000;
+    if (cost < 0.001)
+        return '<$0.001';
+    return `~$${cost.toFixed(3)}`;
+}
+
+
+/***/ }),
+
+/***/ 6290:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseDiffForCommentTargets = parseDiffForCommentTargets;
+/**
+ * Parse a unified diff to determine which new-file line numbers are valid
+ * targets for inline PR review comments (i.e. lines that appear in diff hunks).
+ *
+ * Returns Map<filename, Set<valid line numbers on the RIGHT/new side>>.
+ */
+function parseDiffForCommentTargets(diff) {
+    const result = new Map();
+    const fileChunks = diff.split(/(?=^diff --git )/m);
+    for (const chunk of fileChunks) {
+        if (!chunk.startsWith('diff --git '))
+            continue;
+        const fileMatch = chunk.match(/^diff --git a\/.+? b\/(.+)$/m);
+        if (!fileMatch)
+            continue;
+        const filename = fileMatch[1];
+        const validLines = new Set();
+        const lines = chunk.split('\n');
+        let newLineNum = 0;
+        let inHunk = false;
+        for (const line of lines) {
+            const hunkHeader = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+            if (hunkHeader) {
+                newLineNum = parseInt(hunkHeader[1], 10);
+                inHunk = true;
+                continue;
+            }
+            if (!inHunk)
+                continue;
+            if (line.startsWith('diff --git '))
+                break;
+            if (line.startsWith('+')) {
+                validLines.add(newLineNum);
+                newLineNum++;
+            }
+            else if (line.startsWith('-')) {
+                // deleted line — no line number in the new file
+            }
+            else if (line.startsWith('\\')) {
+                // "\ No newline at end of file"
+            }
+            else {
+                // context line (space-prefixed) or blank context
+                validLines.add(newLineNum);
+                newLineNum++;
+            }
+        }
+        if (validLines.size > 0) {
+            result.set(filename, validLines);
+        }
+    }
+    return result;
 }
 
 
@@ -35959,9 +36065,11 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getPullRequestData = getPullRequestData;
 exports.postReviewComment = postReviewComment;
+exports.postInlineReview = postInlineReview;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const ignore_1 = __nccwpck_require__(7237);
+const diff_parser_1 = __nccwpck_require__(6290);
 async function listAllChangedFiles(octokit, owner, repo, prNumber) {
     const filenames = [];
     let page = 1;
@@ -36020,9 +36128,7 @@ async function getPullRequestData(token, options) {
     }
     if (diffText.length > options.maxDiffSize) {
         core.warning(`Diff size (${diffText.length} chars) exceeds max (${options.maxDiffSize}). Truncating.`);
-        diffText =
-            diffText.slice(0, options.maxDiffSize) +
-                '\n\n... [diff truncated due to size] ...';
+        diffText = smartTruncateDiff(diffText, options.maxDiffSize);
     }
     if (reviewedFiles.length === 0) {
         core.warning('No reviewable files after applying ignore patterns.');
@@ -36041,16 +36147,55 @@ async function getPullRequestData(token, options) {
         redactionCount,
     };
 }
+/**
+ * Truncate a diff at file boundaries instead of cutting mid-file.
+ * Prioritizes source code files over configs/docs.
+ */
+function smartTruncateDiff(diff, maxSize) {
+    const chunks = diff.split(/(?=^diff --git )/m);
+    const codeExts = new Set([
+        '.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java',
+        '.rb', '.php', '.cs', '.c', '.cpp', '.h', '.swift', '.kt',
+    ]);
+    const scored = chunks
+        .filter((c) => c.startsWith('diff --git '))
+        .map((chunk) => {
+        const fileMatch = chunk.match(/^diff --git a\/.+? b\/(.+)$/m);
+        const filename = fileMatch?.[1] ?? '';
+        const ext = filename.slice(filename.lastIndexOf('.'));
+        const priority = codeExts.has(ext) ? 1 : 0;
+        return { chunk, filename, priority };
+    })
+        .sort((a, b) => b.priority - a.priority);
+    const kept = [];
+    let totalSize = 0;
+    const skipped = [];
+    for (const { chunk, filename } of scored) {
+        if (totalSize + chunk.length <= maxSize) {
+            kept.push(chunk);
+            totalSize += chunk.length;
+        }
+        else {
+            skipped.push(filename);
+        }
+    }
+    let result = kept.join('');
+    if (skipped.length > 0) {
+        result += `\n\n... [${skipped.length} file(s) truncated: ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '...' : ''}] ...`;
+    }
+    return result;
+}
+// ─── Comment posting ────────────────────────────────────────────────
 async function postReviewComment(token, prNumber, body) {
     const octokit = github.getOctokit(token);
     const { owner, repo } = github.context.repo;
     const marker = '<!-- ai-pr-reviewer -->';
-    const fullBody = `${marker}\n${body}`;
+    let fullBody = `${marker}\n${body}`;
     if (fullBody.length > 65536) {
         core.warning('Review comment exceeds GitHub limit; truncating body.');
-        const truncated = fullBody.slice(0, 65000) + '\n\n... [review truncated — see workflow logs] ...';
-        await upsertComment(octokit, owner, repo, prNumber, marker, truncated);
-        return;
+        fullBody =
+            fullBody.slice(0, 65000) +
+                '\n\n... [review truncated — see workflow logs] ...';
     }
     await upsertComment(octokit, owner, repo, prNumber, marker, fullBody);
 }
@@ -36079,6 +36224,59 @@ async function upsertComment(octokit, owner, repo, prNumber, marker, body) {
             body,
         });
         core.info('Posted new review comment');
+    }
+}
+// ─── Inline review comments ────────────────────────────────────────
+async function postInlineReview(token, prNumber, diff, findings) {
+    const findingsWithLocation = findings.filter((f) => f.file && f.line);
+    if (findingsWithLocation.length === 0) {
+        return { posted: 0, skipped: 0 };
+    }
+    const validTargets = (0, diff_parser_1.parseDiffForCommentTargets)(diff);
+    const comments = [];
+    let skipped = 0;
+    for (const finding of findingsWithLocation) {
+        const fileTargets = validTargets.get(finding.file);
+        if (!fileTargets || !fileTargets.has(finding.line)) {
+            skipped++;
+            continue;
+        }
+        const icon = finding.severity === 'critical'
+            ? '🔴'
+            : finding.severity === 'warning'
+                ? '🟡'
+                : '🔵';
+        comments.push({
+            path: finding.file,
+            line: finding.line,
+            body: `${icon} **${finding.severity.toUpperCase()}** — ${finding.message}`,
+        });
+    }
+    if (comments.length === 0) {
+        return { posted: 0, skipped };
+    }
+    const octokit = github.getOctokit(token);
+    const { owner, repo } = github.context.repo;
+    try {
+        await octokit.rest.pulls.createReview({
+            owner,
+            repo,
+            pull_number: prNumber,
+            event: 'COMMENT',
+            body: `🤖 AI PR Reviewer — ${comments.length} inline finding(s)`,
+            comments: comments.map((c) => ({
+                path: c.path,
+                line: c.line,
+                body: c.body,
+            })),
+        });
+        core.info(`Posted ${comments.length} inline review comment(s)`);
+        return { posted: comments.length, skipped };
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        core.warning(`Failed to post inline review (falling back to summary): ${msg}`);
+        return { posted: 0, skipped: skipped + comments.length };
     }
 }
 
@@ -36229,6 +36427,8 @@ const config_1 = __nccwpck_require__(2973);
 const providers_1 = __nccwpck_require__(7486);
 const github_1 = __nccwpck_require__(9248);
 const review_1 = __nccwpck_require__(7491);
+const sanitize_1 = __nccwpck_require__(5540);
+const MAX_OUTPUT_BYTES = 900_000; // GitHub Actions output limit is ~1MB
 async function main() {
     try {
         core.info('AI PR Reviewer starting...');
@@ -36243,13 +36443,24 @@ async function main() {
         });
         core.info(`PR #${pr.number}: "${pr.title}" (${pr.reviewedFiles.length} files to review)`);
         const result = await (0, review_1.runReview)(provider, config, pr);
-        core.setOutput('review_body', result.markdown);
+        // Truncate output to stay under GitHub Actions 1MB limit
+        const reviewOutput = result.markdown.length > MAX_OUTPUT_BYTES
+            ? result.markdown.slice(0, MAX_OUTPUT_BYTES) + '\n[truncated]'
+            : result.markdown;
+        core.setOutput('review_body', reviewOutput);
         core.setOutput('has_critical_issues', result.hasCritical.toString());
         core.setOutput('categories_reviewed', result.categories.join(','));
         core.setOutput('findings_count', String(result.structured?.findings.length ?? 0));
         if (config.postReviewComment) {
             core.info('Posting review comment...');
             await (0, github_1.postReviewComment)(config.githubToken, pr.number, result.markdown);
+        }
+        if (config.postInlineComments && result.structured?.findings.length) {
+            core.info('Posting inline review comments...');
+            const { posted, skipped } = await (0, github_1.postInlineReview)(config.githubToken, pr.number, pr.diff, result.structured.findings);
+            if (posted > 0 || skipped > 0) {
+                core.info(`Inline comments: ${posted} posted, ${skipped} skipped (line not in diff)`);
+            }
         }
         if (result.hasCritical && config.failOnCritical) {
             core.setFailed('Critical issues found in PR review. See the review comment for details.');
@@ -36259,8 +36470,8 @@ async function main() {
         }
     }
     catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        core.setFailed(`AI PR Reviewer failed: ${message}`);
+        const raw = error instanceof Error ? error.message : String(error);
+        core.setFailed(`AI PR Reviewer failed: ${(0, sanitize_1.sanitizeErrorMessage)(raw)}`);
     }
 }
 main();
@@ -36306,10 +36517,14 @@ class AnthropicProvider {
         catch {
             // Fallback: unstructured text still shown in PR comment
         }
+        const inputTokens = response.usage?.input_tokens ?? 0;
+        const outputTokens = response.usage?.output_tokens ?? 0;
         return {
             review: text,
             structured,
-            tokensUsed: (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0),
+            tokensUsed: inputTokens + outputTokens,
+            inputTokens,
+            outputTokens,
         };
     }
 }
@@ -36372,7 +36587,8 @@ class OpenAIProvider {
             ],
         }));
         const text = response.choices[0]?.message?.content ?? '';
-        const tokensUsed = (response.usage?.prompt_tokens ?? 0) + (response.usage?.completion_tokens ?? 0);
+        const inputTokens = response.usage?.prompt_tokens ?? 0;
+        const outputTokens = response.usage?.completion_tokens ?? 0;
         let structured;
         try {
             structured = (0, findings_1.parseStructuredReview)(text);
@@ -36380,7 +36596,13 @@ class OpenAIProvider {
         catch {
             // Fallback to raw text
         }
-        return { review: text, structured, tokensUsed };
+        return {
+            review: text,
+            structured,
+            tokensUsed: inputTokens + outputTokens,
+            inputTokens,
+            outputTokens,
+        };
     }
 }
 exports.OpenAIProvider = OpenAIProvider;
@@ -36449,6 +36671,7 @@ const DEFAULT_RETRY = {
     maxAttempts: 3,
     baseDelayMs: 1000,
     maxDelayMs: 15000,
+    timeoutMs: 120_000,
 };
 function isRetryable(err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -36464,12 +36687,21 @@ function isRetryable(err) {
 function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
+function withTimeout(promise, ms) {
+    if (ms <= 0)
+        return promise;
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Request timed out after ${ms}ms`)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 async function withRetry(fn, options = {}) {
     const opts = { ...DEFAULT_RETRY, ...options };
     let lastError;
     for (let attempt = 1; attempt <= opts.maxAttempts; attempt++) {
         try {
-            return await fn();
+            return await withTimeout(fn(), opts.timeoutMs);
         }
         catch (err) {
             lastError = err;
@@ -36528,6 +36760,7 @@ exports.runReview = runReview;
 const core = __importStar(__nccwpck_require__(7484));
 const config_1 = __nccwpck_require__(2973);
 const findings_1 = __nccwpck_require__(1001);
+const cost_1 = __nccwpck_require__(8666);
 const CATEGORY_LABELS = {
     security: 'Security',
     tests: 'Test Coverage',
@@ -36568,7 +36801,7 @@ function buildCombinedPrompt(activeCategories, pr, config) {
         prompt += `\n### ${label} (category id: "${id}")\n${guidelines.guidelines}\n`;
     }
     prompt += `\n## Diff\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
-    prompt += `\nReview the diff for every category above. Return JSON with findings tagged by category id.`;
+    prompt += `\nReview the diff for every category above. Return JSON with findings tagged by category id. Include "file" and "line" fields wherever possible so findings can be posted as inline comments.`;
     return prompt;
 }
 async function runReview(provider, config, pr) {
@@ -36589,6 +36822,8 @@ async function runReview(provider, config, pr) {
             hasCritical: false,
             categories: [],
             tokensUsed: 0,
+            inputTokens: 0,
+            outputTokens: 0,
         };
     }
     if (pr.reviewedFiles.length === 0 && pr.diff.trim().length === 0) {
@@ -36597,6 +36832,8 @@ async function runReview(provider, config, pr) {
             hasCritical: false,
             categories: activeCategories.map((c) => c.id),
             tokensUsed: 0,
+            inputTokens: 0,
+            outputTokens: 0,
         };
     }
     const categoryIds = activeCategories.map((c) => c.id);
@@ -36614,17 +36851,31 @@ async function runReview(provider, config, pr) {
         throw err;
     }
     const structured = response.structured;
+    // P0 fix: when JSON parsing fails, fall back to text-based critical detection
     const hasCritical = structured
         ? (0, findings_1.hasCriticalFindings)(structured)
-        : false;
-    const markdown = formatReviewMarkdown(response, structured, pr, config, activeCategories.map((c) => c.id));
+        : detectCriticalInText(response.review);
+    const markdown = formatReviewMarkdown(response, structured, pr, config, categoryIds);
     return {
         markdown,
         hasCritical,
         categories: categoryIds,
         structured,
         tokensUsed: response.tokensUsed,
+        inputTokens: response.inputTokens,
+        outputTokens: response.outputTokens,
     };
+}
+/**
+ * Fallback when structured JSON parsing fails.
+ * Scans raw AI text for unambiguous critical-severity indicators.
+ */
+function detectCriticalInText(text) {
+    const lower = text.toLowerCase();
+    return (/\bcritical\b/.test(lower) &&
+        (/\bseverity['":\s]+critical/i.test(text) ||
+            /🔴\s*critical/i.test(text) ||
+            /\*\*critical\*\*/i.test(text)));
 }
 function formatReviewMarkdown(response, structured, pr, config, categories) {
     let md = `# 🤖 AI PR Review\n\n`;
@@ -36633,6 +36884,19 @@ function formatReviewMarkdown(response, structured, pr, config, categories) {
     md += `**Files reviewed:** ${pr.reviewedFiles.length} / ${pr.changedFiles.length} changed\n`;
     if (pr.redactionCount > 0) {
         md += `**Secrets redacted:** ${pr.redactionCount} value(s) removed before AI review\n`;
+    }
+    // Status badge
+    if (structured) {
+        const criticalCount = structured.findings.filter((f) => f.severity === 'critical').length;
+        if (criticalCount > 0) {
+            md += `\n> 🚨 **${criticalCount} critical issue(s) found — merge blocked**\n`;
+        }
+        else if (structured.findings.length > 0) {
+            md += `\n> ✅ **No critical issues — ${structured.findings.length} suggestion(s)/warning(s)**\n`;
+        }
+        else {
+            md += `\n> ✅ **All clear — no issues found**\n`;
+        }
     }
     md += `\n---\n\n`;
     if (structured && structured.findings.length > 0) {
@@ -36653,9 +36917,39 @@ function formatReviewMarkdown(response, structured, pr, config, categories) {
     md += `<details>\n<summary>📊 Review Stats</summary>\n\n`;
     md += `- Categories: ${categories.map((id) => CATEGORY_LABELS[id] || id).join(', ')}\n`;
     md += `- API calls: 1 (combined review)\n`;
+    md += `- Tokens: ${response.inputTokens.toLocaleString()} input + ${response.outputTokens.toLocaleString()} output = ${response.tokensUsed.toLocaleString()} total\n`;
+    const cost = (0, cost_1.estimateCost)(config.model, response.inputTokens, response.outputTokens);
+    if (cost) {
+        md += `- Estimated cost: ${cost}\n`;
+    }
     md += `- Provider: ${config.provider} / ${config.model}\n`;
     md += `</details>\n`;
     return md;
+}
+
+
+/***/ }),
+
+/***/ 5540:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/**
+ * Strip API keys and tokens from error messages before they reach workflow logs.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.sanitizeErrorMessage = sanitizeErrorMessage;
+function sanitizeErrorMessage(message) {
+    let result = message;
+    result = result.replace(/sk-ant-[A-Za-z0-9\-_]{20,}/g, 'sk-ant-***');
+    result = result.replace(/sk-proj-[A-Za-z0-9\-_]{20,}/g, 'sk-proj-***');
+    result = result.replace(/sk-[A-Za-z0-9]{20,}/g, 'sk-***');
+    result = result.replace(/(?:AKIA|ASIA)[0-9A-Z]{16}/g, 'AKIA***');
+    result = result.replace(/gh[pousr]_[A-Za-z0-9_]{20,}/g, 'gh*_***');
+    result = result.replace(/xox[baprs]-[A-Za-z0-9-]{10,}/g, 'xox*-***');
+    result = result.replace(/Bearer\s+[A-Za-z0-9\-._~+/]{10,}=*/gi, 'Bearer ***');
+    return result;
 }
 
 

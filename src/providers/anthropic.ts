@@ -34,11 +34,15 @@ export class AnthropicProvider implements AIProvider {
       // Fallback: unstructured text still shown in PR comment
     }
 
+    const inputTokens = response.usage?.input_tokens ?? 0;
+    const outputTokens = response.usage?.output_tokens ?? 0;
+
     return {
       review: text,
       structured,
-      tokensUsed:
-        (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0),
+      tokensUsed: inputTokens + outputTokens,
+      inputTokens,
+      outputTokens,
     };
   }
 }

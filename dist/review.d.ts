@@ -8,5 +8,7 @@ export interface ReviewResult {
     categories: string[];
     structured?: StructuredReview;
     tokensUsed: number;
+    inputTokens: number;
+    outputTokens: number;
 }
 export declare function runReview(provider: AIProvider, config: ReviewConfig, pr: PullRequestData): Promise<ReviewResult>;

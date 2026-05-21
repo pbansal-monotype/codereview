@@ -1,6 +1,8 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { filterDiffByFiles, shouldIgnoreFile } from './ignore';
+import { parseDiffForCommentTargets } from './diff-parser';
+import { Finding } from './findings';
 
 export interface PullRequestData {
   number: number;
@@ -84,11 +86,12 @@ export async function getPullRequestData(
   );
 
   if (ignoredFiles.length > 0) {
-    core.info(`Skipping ${ignoredFiles.length} ignored file(s): ${ignoredFiles.slice(0, 10).join(', ')}${ignoredFiles.length > 10 ? '...' : ''}`);
+    core.info(
+      `Skipping ${ignoredFiles.length} ignored file(s): ${ignoredFiles.slice(0, 10).join(', ')}${ignoredFiles.length > 10 ? '...' : ''}`,
+    );
   }
 
   const ignoredSet = new Set(ignoredFiles);
-
   let diffText = rawDiff as unknown as string;
   diffText = filterDiffByFiles(diffText, ignoredSet);
 
@@ -109,9 +112,7 @@ export async function getPullRequestData(
     core.warning(
       `Diff size (${diffText.length} chars) exceeds max (${options.maxDiffSize}). Truncating.`,
     );
-    diffText =
-      diffText.slice(0, options.maxDiffSize) +
-      '\n\n... [diff truncated due to size] ...';
+    diffText = smartTruncateDiff(diffText, options.maxDiffSize);
   }
 
   if (reviewedFiles.length === 0) {
@@ -133,6 +134,50 @@ export async function getPullRequestData(
   };
 }
 
+/**
+ * Truncate a diff at file boundaries instead of cutting mid-file.
+ * Prioritizes source code files over configs/docs.
+ */
+function smartTruncateDiff(diff: string, maxSize: number): string {
+  const chunks = diff.split(/(?=^diff --git )/m);
+  const codeExts = new Set([
+    '.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java',
+    '.rb', '.php', '.cs', '.c', '.cpp', '.h', '.swift', '.kt',
+  ]);
+
+  const scored = chunks
+    .filter((c) => c.startsWith('diff --git '))
+    .map((chunk) => {
+      const fileMatch = chunk.match(/^diff --git a\/.+? b\/(.+)$/m);
+      const filename = fileMatch?.[1] ?? '';
+      const ext = filename.slice(filename.lastIndexOf('.'));
+      const priority = codeExts.has(ext) ? 1 : 0;
+      return { chunk, filename, priority };
+    })
+    .sort((a, b) => b.priority - a.priority);
+
+  const kept: string[] = [];
+  let totalSize = 0;
+  const skipped: string[] = [];
+
+  for (const { chunk, filename } of scored) {
+    if (totalSize + chunk.length <= maxSize) {
+      kept.push(chunk);
+      totalSize += chunk.length;
+    } else {
+      skipped.push(filename);
+    }
+  }
+
+  let result = kept.join('');
+  if (skipped.length > 0) {
+    result += `\n\n... [${skipped.length} file(s) truncated: ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '...' : ''}] ...`;
+  }
+  return result;
+}
+
+// ─── Comment posting ────────────────────────────────────────────────
+
 export async function postReviewComment(
   token: string,
   prNumber: number,
@@ -142,14 +187,13 @@ export async function postReviewComment(
   const { owner, repo } = github.context.repo;
 
   const marker = '<!-- ai-pr-reviewer -->';
-  const fullBody = `${marker}\n${body}`;
+  let fullBody = `${marker}\n${body}`;
 
   if (fullBody.length > 65536) {
     core.warning('Review comment exceeds GitHub limit; truncating body.');
-    const truncated =
-      fullBody.slice(0, 65000) + '\n\n... [review truncated — see workflow logs] ...';
-    await upsertComment(octokit, owner, repo, prNumber, marker, truncated);
-    return;
+    fullBody =
+      fullBody.slice(0, 65000) +
+      '\n\n... [review truncated — see workflow logs] ...';
   }
 
   await upsertComment(octokit, owner, repo, prNumber, marker, fullBody);
@@ -188,5 +232,73 @@ async function upsertComment(
       body,
     });
     core.info('Posted new review comment');
+  }
+}
+
+// ─── Inline review comments ────────────────────────────────────────
+
+export async function postInlineReview(
+  token: string,
+  prNumber: number,
+  diff: string,
+  findings: Finding[],
+): Promise<{ posted: number; skipped: number }> {
+  const findingsWithLocation = findings.filter((f) => f.file && f.line);
+  if (findingsWithLocation.length === 0) {
+    return { posted: 0, skipped: 0 };
+  }
+
+  const validTargets = parseDiffForCommentTargets(diff);
+
+  const comments: Array<{ path: string; line: number; body: string }> = [];
+  let skipped = 0;
+
+  for (const finding of findingsWithLocation) {
+    const fileTargets = validTargets.get(finding.file!);
+    if (!fileTargets || !fileTargets.has(finding.line!)) {
+      skipped++;
+      continue;
+    }
+
+    const icon =
+      finding.severity === 'critical'
+        ? '🔴'
+        : finding.severity === 'warning'
+          ? '🟡'
+          : '🔵';
+
+    comments.push({
+      path: finding.file!,
+      line: finding.line!,
+      body: `${icon} **${finding.severity.toUpperCase()}** — ${finding.message}`,
+    });
+  }
+
+  if (comments.length === 0) {
+    return { posted: 0, skipped };
+  }
+
+  const octokit = github.getOctokit(token);
+  const { owner, repo } = github.context.repo;
+
+  try {
+    await octokit.rest.pulls.createReview({
+      owner,
+      repo,
+      pull_number: prNumber,
+      event: 'COMMENT',
+      body: `🤖 AI PR Reviewer — ${comments.length} inline finding(s)`,
+      comments: comments.map((c) => ({
+        path: c.path,
+        line: c.line,
+        body: c.body,
+      })),
+    });
+    core.info(`Posted ${comments.length} inline review comment(s)`);
+    return { posted: comments.length, skipped };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    core.warning(`Failed to post inline review (falling back to summary): ${msg}`);
+    return { posted: 0, skipped: skipped + comments.length };
   }
 }

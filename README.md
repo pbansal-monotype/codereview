@@ -5,15 +5,18 @@ A GitHub Action that uses **Claude (Anthropic)** or **OpenAI** to review pull re
 ## Features
 
 - **Dual AI support** — switch between Anthropic Claude and OpenAI GPT with a single input
+- **Inline review comments** — posts findings directly on the affected lines in the diff
 - **Configurable review categories** — security, tests, performance, cost, and custom
 - **Company guidelines** — pass your own review guidelines via a config file or action inputs
 - **Custom prompts** — send additional context or instructions to the AI
 - **Smart comments** — posts a single review comment and updates it on new pushes
-- **Fail on critical** — reliably gates on structured `critical` findings (not text matching)
+- **Fail on critical** — reliably gates on structured `critical` findings (with text fallback)
 - **Secret redaction** — strips API keys, tokens, and credentials from diffs before LLM calls
 - **File ignore patterns** — skips lockfiles, binaries, `dist/`, and custom globs
+- **Smart diff truncation** — prioritizes source code files when truncating large diffs
 - **Single combined review** — one API call per PR (lower cost and latency)
-- **Retry with backoff** — handles rate limits and transient AI errors
+- **Cost estimation** — shows approximate dollar cost per review in the stats
+- **Retry with backoff** — handles rate limits and transient AI errors with timeout
 - **Config file support** — centralize guidelines in `.github/pr-review-config.yml`
 
 ## Quick Start
@@ -77,13 +80,19 @@ Create `.github/pr-review-config.yml` to centralize your company's guidelines. S
 | `test_guidelines` | No | built-in | Custom test review guidelines |
 | `performance_guidelines` | No | built-in | Custom performance guidelines |
 | `cost_guidelines` | No | built-in | Custom cost review guidelines |
-| `custom_prompt` | No | — | Additional text sent to the AI |
-| `extra_instructions` | No | — | Company-wide policies appended to every call |
-| `max_diff_size` | No | `60000` | Max diff characters before truncation |
-| `post_review_comment` | No | `true` | Post review as a PR comment |
+| `custom_prompt` | No | — | Repo-specific context (tech stack, architecture) |
+| `extra_instructions` | No | — | Company-wide policies for the system prompt (tone, standards) |
+| `max_diff_size` | No | `60000` | Max diff characters before smart truncation |
+| `post_review_comment` | No | `true` | Post review summary as a PR comment |
+| `post_inline_comments` | No | `true` | Post inline comments on specific diff lines |
 | `fail_on_critical` | No | `false` | Fail the action on critical issues |
 | `ignore_paths` | No | — | Extra comma-separated globs to skip |
 | `redact_secrets` | No | `true` | Redact secrets before sending diff to AI |
+| `timeout` | No | `120` | Timeout in seconds for each AI API call |
+
+> **`custom_prompt` vs `extra_instructions`:** Use `custom_prompt` for repo-specific context
+> (e.g. "This is a Django app using PostgreSQL"). Use `extra_instructions` for company-wide
+> policies (e.g. "Be concise. Follow our coding standards at wiki.internal/standards").
 
 ## Outputs
 
@@ -170,6 +179,33 @@ guidelines:
     fail_on_critical: 'true'
 ```
 
+### Disable inline comments (summary only)
+
+```yaml
+- uses: your-org/ai-pr-reviewer@v1
+  with:
+    provider: 'anthropic'
+    api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    post_inline_comments: 'false'
+```
+
+## Fork-based PRs (`pull_request_target`)
+
+If your repository receives PRs from forks (common in open source or cross-team setups),
+the `pull_request` trigger cannot access repository secrets. Use `pull_request_target` instead:
+
+```yaml
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+```
+
+> **Security note:** `pull_request_target` runs in the context of the base branch, so it
+> has access to secrets. However, you should **never** run untrusted code from the PR
+> (e.g. `npm install` on the PR branch) in this context. This action only reads the diff
+> and metadata — it does not execute PR code, so it is safe to use with `pull_request_target`.
+
 ## Development
 
 ```bash
@@ -185,11 +221,11 @@ CI runs lint, tests, and build on every push/PR (see `.github/workflows/ci.yml`)
 
 1. **Trigger** — the action runs on `pull_request` events
 2. **Fetch** — retrieves the PR diff and metadata via the GitHub API
-3. **Review** — sends each enabled category to the AI with your guidelines
-4. **Post** — combines all category reviews into a single markdown comment
-5. **Gate** — optionally fails the CI check if critical issues are found
+3. **Filter** — removes ignored files, redacts secrets, smart-truncates large diffs
+4. **Review** — sends all categories to the AI in a single call with your guidelines
+5. **Post** — creates a summary comment + inline comments on affected lines
+6. **Gate** — optionally fails the CI check if critical issues are found
 
 ## License
 
 MIT
-# codereview

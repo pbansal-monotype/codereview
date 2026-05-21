@@ -5,7 +5,8 @@ import {
   hasCriticalFindings,
   StructuredReview,
 } from './findings';
-import { AIProvider } from './providers';
+import { estimateCost } from './cost';
+import { AIProvider, ReviewResponse } from './providers';
 import { PullRequestData } from './github';
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -61,7 +62,7 @@ function buildCombinedPrompt(
   }
 
   prompt += `\n## Diff\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
-  prompt += `\nReview the diff for every category above. Return JSON with findings tagged by category id.`;
+  prompt += `\nReview the diff for every category above. Return JSON with findings tagged by category id. Include "file" and "line" fields wherever possible so findings can be posted as inline comments.`;
 
   return prompt;
 }
@@ -72,6 +73,8 @@ export interface ReviewResult {
   categories: string[];
   structured?: StructuredReview;
   tokensUsed: number;
+  inputTokens: number;
+  outputTokens: number;
 }
 
 export async function runReview(
@@ -98,6 +101,8 @@ export async function runReview(
       hasCritical: false,
       categories: [],
       tokensUsed: 0,
+      inputTokens: 0,
+      outputTokens: 0,
     };
   }
 
@@ -108,6 +113,8 @@ export async function runReview(
       hasCritical: false,
       categories: activeCategories.map((c) => c.id),
       tokensUsed: 0,
+      inputTokens: 0,
+      outputTokens: 0,
     };
   }
 
@@ -119,7 +126,7 @@ export async function runReview(
   const systemPrompt = buildSystemPrompt(config);
   const userPrompt = buildCombinedPrompt(activeCategories, pr, config);
 
-  let response;
+  let response: ReviewResponse;
   try {
     response = await provider.review({ systemPrompt, userPrompt });
     core.info(`Review complete (${response.tokensUsed} tokens)`);
@@ -130,16 +137,18 @@ export async function runReview(
   }
 
   const structured = response.structured;
+
+  // P0 fix: when JSON parsing fails, fall back to text-based critical detection
   const hasCritical = structured
     ? hasCriticalFindings(structured)
-    : false;
+    : detectCriticalInText(response.review);
 
   const markdown = formatReviewMarkdown(
     response,
     structured,
     pr,
     config,
-    activeCategories.map((c) => c.id),
+    categoryIds,
   );
 
   return {
@@ -148,11 +157,27 @@ export async function runReview(
     categories: categoryIds,
     structured,
     tokensUsed: response.tokensUsed,
+    inputTokens: response.inputTokens,
+    outputTokens: response.outputTokens,
   };
 }
 
+/**
+ * Fallback when structured JSON parsing fails.
+ * Scans raw AI text for unambiguous critical-severity indicators.
+ */
+function detectCriticalInText(text: string): boolean {
+  const lower = text.toLowerCase();
+  return (
+    /\bcritical\b/.test(lower) &&
+    (/\bseverity['":\s]+critical/i.test(text) ||
+      /🔴\s*critical/i.test(text) ||
+      /\*\*critical\*\*/i.test(text))
+  );
+}
+
 function formatReviewMarkdown(
-  response: { review: string },
+  response: ReviewResponse,
   structured: StructuredReview | undefined,
   pr: PullRequestData,
   config: ReviewConfig,
@@ -167,12 +192,32 @@ function formatReviewMarkdown(
     md += `**Secrets redacted:** ${pr.redactionCount} value(s) removed before AI review\n`;
   }
 
+  // Status badge
+  if (structured) {
+    const criticalCount = structured.findings.filter(
+      (f) => f.severity === 'critical',
+    ).length;
+    if (criticalCount > 0) {
+      md += `\n> 🚨 **${criticalCount} critical issue(s) found — merge blocked**\n`;
+    } else if (structured.findings.length > 0) {
+      md += `\n> ✅ **No critical issues — ${structured.findings.length} suggestion(s)/warning(s)**\n`;
+    } else {
+      md += `\n> ✅ **All clear — no issues found**\n`;
+    }
+  }
+
   md += `\n---\n\n`;
 
   if (structured && structured.findings.length > 0) {
-    const critical = structured.findings.filter((f) => f.severity === 'critical').length;
-    const warning = structured.findings.filter((f) => f.severity === 'warning').length;
-    const suggestion = structured.findings.filter((f) => f.severity === 'suggestion').length;
+    const critical = structured.findings.filter(
+      (f) => f.severity === 'critical',
+    ).length;
+    const warning = structured.findings.filter(
+      (f) => f.severity === 'warning',
+    ).length;
+    const suggestion = structured.findings.filter(
+      (f) => f.severity === 'suggestion',
+    ).length;
     md += `**Findings:** 🔴 ${critical} critical · 🟡 ${warning} warning · 🔵 ${suggestion} suggestion\n\n`;
     md += formatFindingsMarkdown(structured, CATEGORY_LABELS);
   } else if (structured) {
@@ -186,6 +231,17 @@ function formatReviewMarkdown(
   md += `<details>\n<summary>📊 Review Stats</summary>\n\n`;
   md += `- Categories: ${categories.map((id) => CATEGORY_LABELS[id] || id).join(', ')}\n`;
   md += `- API calls: 1 (combined review)\n`;
+  md += `- Tokens: ${response.inputTokens.toLocaleString()} input + ${response.outputTokens.toLocaleString()} output = ${response.tokensUsed.toLocaleString()} total\n`;
+
+  const cost = estimateCost(
+    config.model,
+    response.inputTokens,
+    response.outputTokens,
+  );
+  if (cost) {
+    md += `- Estimated cost: ${cost}\n`;
+  }
+
   md += `- Provider: ${config.provider} / ${config.model}\n`;
   md += `</details>\n`;
 
