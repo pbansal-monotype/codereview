@@ -1,0 +1,88 @@
+# =============================================================================
+# AI PR Reviewer — Configuration File
+# =============================================================================
+# Place this file at .github/pr-review-config.yml in your repository.
+# All fields are optional; action inputs override values set here.
+# =============================================================================
+
+# AI provider: "anthropic" or "openai"
+provider: anthropic
+
+# Model override (leave empty to use the provider default)
+# model: claude-sonnet-4-20250514
+
+# Which review categories to enable (comma-separated)
+review_categories: security,tests,performance,cost
+
+# Maximum diff size in characters before truncation
+max_diff_size: 60000
+
+# Post the review as a PR comment?
+post_review_comment: true
+
+# Fail the GitHub Action if critical issues are found?
+fail_on_critical: false
+
+# Redact secrets from diff before sending to AI (recommended: true)
+redact_secrets: true
+
+# Extra comma-separated globs to skip (merged with built-in defaults)
+# ignore_paths: "**/migrations/**,**/*.generated.ts"
+
+# Free-form text appended to every AI call (company policies, tone, etc.)
+extra_instructions: |
+  You are reviewing code for Acme Corp.
+  Follow our coding standards documented at https://wiki.internal/standards.
+  Be respectful and constructive. Avoid nitpicking formatting issues.
+
+# Custom prompt text sent alongside each review category
+custom_prompt: |
+  This repository is a Node.js microservice using Express and PostgreSQL.
+  We use TypeScript throughout. Pay special attention to type safety.
+
+# ---------------------------------------------------------------------------
+# Category-specific guidelines
+# ---------------------------------------------------------------------------
+# Each category can have custom guidelines. If omitted, sensible defaults
+# are used. You can override any subset.
+guidelines:
+  security: |
+    Review for security vulnerabilities including:
+    - SQL injection (we use Knex — check for raw queries)
+    - XSS in API responses
+    - Hardcoded secrets or credentials
+    - Missing authentication/authorization checks
+    - Insecure use of JWT tokens
+    - SSRF risks in URL handling
+    - Dependency vulnerabilities
+
+  tests: |
+    Review test quality:
+    - New endpoints must have integration tests
+    - Business logic must have unit tests with >80% branch coverage
+    - Use our test helpers from src/test/helpers.ts
+    - Mock external services, never call them in tests
+    - Each test file should test ONE module
+
+  performance: |
+    Review for performance:
+    - Database queries must use indexes (check migrations)
+    - No N+1 queries — use eager loading
+    - API responses must be paginated if returning lists
+    - Heavy computation must be offloaded to worker queues
+    - Use Redis caching for frequently accessed data
+
+  cost: |
+    Review for cost impact:
+    - New AWS resources must be tagged with team and environment
+    - Avoid provisioning resources in the hot path
+    - Log volume: avoid logging full request/response bodies
+    - S3 storage: set lifecycle policies for temp files
+    - Lambda: check memory/timeout settings
+
+  # Custom category — only used when "custom" is in review_categories
+  custom: |
+    Check for compliance with our internal API design guidelines:
+    - REST endpoints follow /api/v{n}/resource naming
+    - All endpoints return standard envelope: { data, error, meta }
+    - Breaking changes require a version bump

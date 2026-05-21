@@ -1,0 +1,54 @@
+export interface RetryOptions {
+  maxAttempts: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+}
+
+const DEFAULT_RETRY: RetryOptions = {
+  maxAttempts: 3,
+  baseDelayMs: 1000,
+  maxDelayMs: 15000,
+};
+
+function isRetryable(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    /rate.?limit/i.test(msg) ||
+    /429/.test(msg) ||
+    /503/.test(msg) ||
+    /502/.test(msg) ||
+    /500/.test(msg) ||
+    /timeout/i.test(msg) ||
+    /ECONNRESET/i.test(msg) ||
+    /overloaded/i.test(msg)
+  );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  options: Partial<RetryOptions> = {},
+): Promise<T> {
+  const opts = { ...DEFAULT_RETRY, ...options };
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= opts.maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt >= opts.maxAttempts || !isRetryable(err)) throw err;
+
+      const backoff = Math.min(
+        opts.baseDelayMs * Math.pow(2, attempt - 1),
+        opts.maxDelayMs,
+      );
+      await delay(backoff);
+    }
+  }
+
+  throw lastError;
+}

@@ -1,0 +1,51 @@
+# =============================================================================
+# Example workflow — copy this to your repo as .github/workflows/pr-review.yml
+# =============================================================================
+
+name: AI PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Only allow one review at a time per PR to avoid duplicate comments
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: AI Review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run AI PR Review
+        # Replace with your org/repo reference or a published version tag
+        uses: your-org/ai-pr-reviewer@v1
+        with:
+          # --- Required ---
+          provider: 'anthropic'                          # or 'openai'
+          api_key: ${{ secrets.ANTHROPIC_API_KEY }}       # or secrets.OPENAI_API_KEY
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+          # --- Optional overrides ---
+          # model: 'claude-sonnet-4-20250514'
+          # config_path: '.github/pr-review-config.yml'
+          # review_categories: 'security,tests,performance,cost'
+          # fail_on_critical: 'true'
+
+          # --- Inline guidelines (override config file) ---
+          # security_guidelines: 'Check for SQL injection and XSS...'
+          # test_guidelines: 'Ensure 80% coverage...'
+          # performance_guidelines: 'No N+1 queries...'
+          # cost_guidelines: 'Tag all AWS resources...'
+
+          # --- Custom prompt passed to the AI ---
+          # custom_prompt: 'This is a Python Django project using PostgreSQL.'
+          # extra_instructions: 'Be concise. Use bullet points.'
