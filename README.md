@@ -2,37 +2,39 @@
 
 A GitHub Action that uses **Claude (Anthropic)** or **OpenAI** to review pull requests against your company's custom guidelines for security, test coverage, performance, cost, and more.
 
-## Features
+Your team defines the rules. The AI enforces them on every PR — automatically.
 
-- **Dual AI support** — switch between Anthropic Claude and OpenAI GPT with a single input
-- **Inline review comments** — posts findings directly on the affected lines in the diff
-- **Configurable review categories** — security, tests, performance, cost, and custom
-- **Company guidelines** — pass your own review guidelines via a config file or action inputs
-- **Custom prompts** — send additional context or instructions to the AI
-- **Smart comments** — posts a single review comment and updates it on new pushes
-- **Fail on critical** — reliably gates on structured `critical` findings (with text fallback)
-- **Secret redaction** — strips API keys, tokens, and credentials from diffs before LLM calls
-- **File ignore patterns** — skips lockfiles, binaries, `dist/`, and custom globs
-- **Smart diff truncation** — prioritizes source code files when truncating large diffs
-- **Single combined review** — one API call per PR (lower cost and latency)
-- **Cost estimation** — shows approximate dollar cost per review in the stats
-- **Retry with backoff** — handles rate limits and transient AI errors with timeout
-- **Config file support** — centralize guidelines in `.github/pr-review-config.yml`
+---
 
-## Quick Start
+## Why this exists
 
-### 1. Add secrets to your repository
+Code reviews are expensive. Senior engineers spend hours reading diffs, and critical issues still slip through. Static analyzers catch syntax and lint errors, but they can't reason about business logic, architecture patterns, or company-specific policies.
 
-Go to **Settings → Secrets and variables → Actions** and add:
+This action fills that gap. It sends your PR diff to an LLM with your company's guidelines and posts structured, actionable findings — both as a summary comment and as inline comments on the exact lines that need attention.
 
-| Secret | Description |
-|--------|-------------|
-| `ANTHROPIC_API_KEY` | Your Anthropic API key (if using Claude) |
-| `OPENAI_API_KEY` | Your OpenAI API key (if using GPT) |
+## Key capabilities
 
-### 2. Create the workflow
+| Capability | What it does |
+|------------|-------------|
+| **Inline review comments** | Posts findings directly on the affected lines in the PR diff |
+| **5 review categories** | Security, test coverage, performance, cost/infrastructure, and custom |
+| **Company guidelines** | Your rules, your standards — all configurable in one workflow file |
+| **Structured findings** | AI returns machine-parseable JSON with severity, file, line, and message |
+| **CI gating** | Optionally fail the build when critical issues are found |
+| **Secret redaction** | Strips API keys, tokens, PEM keys, and connection strings before sending to AI |
+| **Smart truncation** | Prioritizes source code over configs when diffs exceed the token budget |
+| **Cost transparency** | Shows estimated dollar cost per review in the stats footer |
+| **Dual provider** | Switch between Claude and GPT with a single config change |
 
-Create `.github/workflows/pr-review.yml`:
+## Quick start
+
+### 1. Add your API key as a secret
+
+Go to **Settings > Secrets and variables > Actions** and add `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` if using GPT).
+
+### 2. Create one workflow file
+
+Add `.github/workflows/pr-review.yml` to your repository. That's it — **one file, everything configured inline**:
 
 ```yaml
 name: AI PR Review
@@ -57,16 +59,86 @@ jobs:
 
       - uses: your-org/ai-pr-reviewer@v1
         with:
+          # ── Provider ──────────────────────────────────────────
           provider: 'anthropic'
           api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # model: 'claude-sonnet-4-20250514'    # optional override
+
+          # ── Categories to review ──────────────────────────────
+          review_categories: 'security,tests,performance,cost'
+
+          # ── Company guidelines (inline) ───────────────────────
+          security_guidelines: |
+            - Check for SQL injection, XSS, CSRF
+            - No hardcoded secrets or credentials
+            - All endpoints must have auth middleware
+            - Watch for insecure deserialization
+          test_guidelines: |
+            - New features must have unit tests (>80% branch coverage)
+            - Edge cases and error paths must be tested
+            - Mock external services, never call them in tests
+          performance_guidelines: |
+            - No N+1 queries — use eager loading
+            - API responses must be paginated
+            - Heavy work must go to background queues
+          cost_guidelines: |
+            - New cloud resources must be tagged
+            - Avoid logging full request/response bodies
+            - Check for unbounded storage growth
+
+          # ── Repo context ──────────────────────────────────────
+          custom_prompt: |
+            This is a Node.js microservice using Express and PostgreSQL.
+            We use TypeScript throughout. Pay attention to type safety.
+
+          # ── Company-wide policies ─────────────────────────────
+          extra_instructions: |
+            Be constructive and specific. No nitpicking formatting.
+            Reference file names and line numbers in every finding.
+
+          # ── Behavior ──────────────────────────────────────────
+          fail_on_critical: 'true'
+          post_inline_comments: 'true'
+          redact_secrets: 'true'
+          # ignore_paths: '**/migrations/**,**/*.generated.ts'
+          # timeout: '120'
+          # max_diff_size: '60000'
 ```
 
-### 3. (Optional) Add a config file
+Every PR now gets a full AI review — no extra config files needed.
 
-Create `.github/pr-review-config.yml` to centralize your company's guidelines. See [`pr-review-config.example.yml`](./pr-review-config.example.yml) for a full example.
+## How it works
 
-## Inputs
+```
+PR opened/updated
+       |
+       v
+  Fetch diff + metadata via GitHub API
+       |
+       v
+  Filter ignored files (lockfiles, binaries, dist/)
+       |
+       v
+  Redact secrets (API keys, tokens, PEM keys)
+       |
+       v
+  Smart-truncate if diff exceeds budget (source code first)
+       |
+       v
+  Send to AI with all category guidelines in a single call
+       |
+       v
+  Parse structured JSON response
+       |
+       v
+  Post summary comment + inline comments on affected lines
+       |
+       v
+  Optionally fail CI if critical issues found
+```
+
+## All inputs
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -74,25 +146,27 @@ Create `.github/pr-review-config.yml` to centralize your company's guidelines. S
 | `api_key` | Yes | — | API key for the AI provider |
 | `github_token` | Yes | `${{ github.token }}` | GitHub token for PR access |
 | `model` | No | auto | Model name (defaults to `claude-sonnet-4-20250514` / `gpt-4o`) |
-| `config_path` | No | `.github/pr-review-config.yml` | Path to config file |
-| `review_categories` | No | `security,tests,performance,cost` | Categories to review |
-| `security_guidelines` | No | built-in | Custom security guidelines |
-| `test_guidelines` | No | built-in | Custom test review guidelines |
-| `performance_guidelines` | No | built-in | Custom performance guidelines |
-| `cost_guidelines` | No | built-in | Custom cost review guidelines |
+| `review_categories` | No | `security,tests,performance,cost` | Comma-separated categories to review |
+| `security_guidelines` | No | built-in | Security review rules |
+| `test_guidelines` | No | built-in | Test coverage review rules |
+| `performance_guidelines` | No | built-in | Performance review rules |
+| `cost_guidelines` | No | built-in | Cost/infrastructure review rules |
 | `custom_prompt` | No | — | Repo-specific context (tech stack, architecture) |
-| `extra_instructions` | No | — | Company-wide policies for the system prompt (tone, standards) |
+| `extra_instructions` | No | — | Company-wide policies for the system prompt |
 | `max_diff_size` | No | `60000` | Max diff characters before smart truncation |
-| `post_review_comment` | No | `true` | Post review summary as a PR comment |
+| `post_review_comment` | No | `true` | Post the summary comment on the PR |
 | `post_inline_comments` | No | `true` | Post inline comments on specific diff lines |
-| `fail_on_critical` | No | `false` | Fail the action on critical issues |
-| `ignore_paths` | No | — | Extra comma-separated globs to skip |
+| `fail_on_critical` | No | `false` | Fail the CI check on critical findings |
+| `ignore_paths` | No | — | Extra globs to skip (e.g. `**/migrations/**`) |
 | `redact_secrets` | No | `true` | Redact secrets before sending diff to AI |
-| `timeout` | No | `120` | Timeout in seconds for each AI API call |
+| `timeout` | No | `120` | Timeout in seconds per AI API call |
+| `config_path` | No | `.github/pr-review-config.yml` | Path to optional config file (see below) |
 
-> **`custom_prompt` vs `extra_instructions`:** Use `custom_prompt` for repo-specific context
-> (e.g. "This is a Django app using PostgreSQL"). Use `extra_instructions` for company-wide
-> policies (e.g. "Be concise. Follow our coding standards at wiki.internal/standards").
+> **`custom_prompt` vs `extra_instructions`**
+>
+> `custom_prompt` is **repo-specific context** — "This is a Django app using PostgreSQL with Celery workers."
+>
+> `extra_instructions` is **company-wide policy** — "Be concise. Follow coding standards at wiki.internal/standards."
 
 ## Outputs
 
@@ -100,12 +174,73 @@ Create `.github/pr-review-config.yml` to centralize your company's guidelines. S
 |--------|-------------|
 | `review_body` | Full review markdown text |
 | `has_critical_issues` | `true` if critical issues were found |
-| `categories_reviewed` | Comma-separated list of reviewed categories |
-| `findings_count` | Number of structured findings returned |
+| `categories_reviewed` | Comma-separated list of categories reviewed |
+| `findings_count` | Total number of structured findings |
 
-## Configuration File
+## More examples
 
-The config file (`.github/pr-review-config.yml`) lets you version-control your review guidelines. Action inputs override config file values when both are set.
+### Minimal setup (uses built-in guidelines)
+
+```yaml
+- uses: your-org/ai-pr-reviewer@v1
+  with:
+    provider: 'anthropic'
+    api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Use OpenAI instead of Claude
+
+```yaml
+- uses: your-org/ai-pr-reviewer@v1
+  with:
+    provider: 'openai'
+    api_key: ${{ secrets.OPENAI_API_KEY }}
+    model: 'gpt-4o'
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Review only security and tests
+
+```yaml
+- uses: your-org/ai-pr-reviewer@v1
+  with:
+    provider: 'anthropic'
+    api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    review_categories: 'security,tests'
+```
+
+### Add a custom review category
+
+```yaml
+- uses: your-org/ai-pr-reviewer@v1
+  with:
+    provider: 'anthropic'
+    api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    review_categories: 'security,tests,custom'
+    custom_prompt: |
+      Check for compliance with our API design guidelines:
+      - REST endpoints follow /api/v{n}/resource naming
+      - All endpoints return { data, error, meta } envelope
+      - Breaking changes require a version bump
+```
+
+### Summary comment only (no inline)
+
+```yaml
+- uses: your-org/ai-pr-reviewer@v1
+  with:
+    provider: 'anthropic'
+    api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    post_inline_comments: 'false'
+```
+
+## Optional: external config file
+
+If your guidelines are long or shared across many repos, you can extract them to a separate file. Create `.github/pr-review-config.yml`:
 
 ```yaml
 provider: anthropic
@@ -125,75 +260,15 @@ guidelines:
     No N+1 queries, use pagination for lists...
   cost: |
     Tag all cloud resources, check log volume...
-  custom: |
-    Ensure API endpoints follow REST conventions...
 ```
 
-## Examples
+The action auto-loads this file if it exists. Action inputs override config file values when both are set.
 
-### Use OpenAI instead of Claude
+See [`pr-review-config.example.yml`](./pr-review-config.example.yml) for a complete example.
 
-```yaml
-- uses: your-org/ai-pr-reviewer@v1
-  with:
-    provider: 'openai'
-    api_key: ${{ secrets.OPENAI_API_KEY }}
-    model: 'gpt-4o'
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-```
+## Fork-based PRs
 
-### Only review security and tests
-
-```yaml
-- uses: your-org/ai-pr-reviewer@v1
-  with:
-    provider: 'anthropic'
-    api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-    review_categories: 'security,tests'
-```
-
-### Pass inline guidelines
-
-```yaml
-- uses: your-org/ai-pr-reviewer@v1
-  with:
-    provider: 'anthropic'
-    api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-    security_guidelines: |
-      We use Django ORM — check for raw SQL queries.
-      Ensure all views have @login_required.
-    custom_prompt: |
-      This is a Python Django monolith with Celery workers.
-```
-
-### Fail CI on critical issues
-
-```yaml
-- uses: your-org/ai-pr-reviewer@v1
-  with:
-    provider: 'anthropic'
-    api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-    fail_on_critical: 'true'
-```
-
-### Disable inline comments (summary only)
-
-```yaml
-- uses: your-org/ai-pr-reviewer@v1
-  with:
-    provider: 'anthropic'
-    api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-    github_token: ${{ secrets.GITHUB_TOKEN }}
-    post_inline_comments: 'false'
-```
-
-## Fork-based PRs (`pull_request_target`)
-
-If your repository receives PRs from forks (common in open source or cross-team setups),
-the `pull_request` trigger cannot access repository secrets. Use `pull_request_target` instead:
+If your repository receives PRs from forks, the `pull_request` trigger cannot access secrets. Use `pull_request_target` instead:
 
 ```yaml
 on:
@@ -201,30 +276,38 @@ on:
     types: [opened, synchronize, reopened]
 ```
 
-> **Security note:** `pull_request_target` runs in the context of the base branch, so it
-> has access to secrets. However, you should **never** run untrusted code from the PR
-> (e.g. `npm install` on the PR branch) in this context. This action only reads the diff
-> and metadata — it does not execute PR code, so it is safe to use with `pull_request_target`.
+> **Security:** This action only reads the diff and metadata — it never executes code from the PR, so it is safe to use with `pull_request_target`.
+
+## Architecture
+
+```
+src/
+├── index.ts              Entry point — orchestration, error handling
+├── config.ts             Config loading from file + action inputs
+├── review.ts             Prompt construction, response formatting
+├── github.ts             GitHub API — diff fetching, comments, inline reviews
+├── findings.ts           Structured JSON parsing and validation
+├── diff-parser.ts        Diff parsing for inline comment targeting
+├── cost.ts               Per-model cost estimation
+├── sanitize.ts           API key redaction from error messages
+├── redact.ts             Secret redaction from diffs
+├── retry.ts              Retry with exponential backoff + timeout
+├── ignore.ts             File ignore pattern matching
+└── providers/
+    ├── types.ts           AIProvider interface
+    ├── anthropic.ts       Claude integration
+    ├── openai.ts          GPT integration
+    └── index.ts           Provider factory
+```
 
 ## Development
 
 ```bash
-npm install
-npm run lint
-npm test
-npm run build
+npm install        # install dependencies
+npm run lint       # type-check with tsc
+npm test           # run 31 tests across 8 suites
+npm run build      # compile to dist/index.js with ncc
 ```
-
-CI runs lint, tests, and build on every push/PR (see `.github/workflows/ci.yml`).
-
-## How It Works
-
-1. **Trigger** — the action runs on `pull_request` events
-2. **Fetch** — retrieves the PR diff and metadata via the GitHub API
-3. **Filter** — removes ignored files, redacts secrets, smart-truncates large diffs
-4. **Review** — sends all categories to the AI in a single call with your guidelines
-5. **Post** — creates a summary comment + inline comments on affected lines
-6. **Gate** — optionally fails the CI check if critical issues are found
 
 ## License
 
