@@ -28,13 +28,15 @@ This action fills that gap. It sends your PR diff to an LLM with your company's 
 
 ## Quick start
 
-### 1. Add your API key as a secret
+Two options — centralized (recommended for teams) or self-managed.
 
-Go to **Settings > Secrets and variables > Actions** and add `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` if using GPT).
+### Option A: Centralized (recommended)
 
-### 2. Create one workflow file
+The API key lives in **this repo only**. Consumer repos don't need any secrets — just a 10-line workflow file.
 
-Add `.github/workflows/pr-review.yml` to your repository. That's it — **one file, everything configured inline**:
+**One-time setup (admin):** Add `ANTHROPIC_API_KEY` as a secret in the `pbansal-monotype/codereview` repo.
+
+**In each consumer repo**, create `.github/workflows/pr-review.yml`:
 
 ```yaml
 name: AI PR Review
@@ -43,9 +45,29 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
-concurrency:
-  group: pr-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+jobs:
+  review:
+    uses: pbansal-monotype/codereview/.github/workflows/pr-review.yml@main
+    with:
+      provider: 'anthropic'
+      review_categories: 'security,tests,performance,cost'
+      custom_prompt: |
+        This is a Node.js microservice using Express and PostgreSQL.
+    secrets: inherit
+```
+
+That's it. No API keys in consumer repos. The reusable workflow reads the key from `pbansal-monotype/codereview`'s secrets.
+
+### Option B: Self-managed (each repo has its own key)
+
+Add `ANTHROPIC_API_KEY` as a secret in the consumer repo, then:
+
+```yaml
+name: AI PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
@@ -54,59 +76,38 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: your-org/ai-pr-reviewer@v1
+      - uses: pbansal-monotype/codereview@main
         with:
-          # ── Provider ──────────────────────────────────────────
           provider: 'anthropic'
-          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          # model: 'claude-sonnet-4-20250514'    # optional override
-
-          # ── Categories to review ──────────────────────────────
           review_categories: 'security,tests,performance,cost'
+          fail_on_critical: 'true'
 
-          # ── Company guidelines (inline) ───────────────────────
           security_guidelines: |
             - Check for SQL injection, XSS, CSRF
             - No hardcoded secrets or credentials
             - All endpoints must have auth middleware
-            - Watch for insecure deserialization
           test_guidelines: |
             - New features must have unit tests (>80% branch coverage)
-            - Edge cases and error paths must be tested
             - Mock external services, never call them in tests
           performance_guidelines: |
             - No N+1 queries — use eager loading
             - API responses must be paginated
-            - Heavy work must go to background queues
           cost_guidelines: |
             - New cloud resources must be tagged
             - Avoid logging full request/response bodies
-            - Check for unbounded storage growth
 
-          # ── Repo context ──────────────────────────────────────
           custom_prompt: |
             This is a Node.js microservice using Express and PostgreSQL.
-            We use TypeScript throughout. Pay attention to type safety.
-
-          # ── Company-wide policies ─────────────────────────────
           extra_instructions: |
             Be constructive and specific. No nitpicking formatting.
-            Reference file names and line numbers in every finding.
-
-          # ── Behavior ──────────────────────────────────────────
-          fail_on_critical: 'true'
-          post_inline_comments: 'true'
-          redact_secrets: 'true'
-          # ignore_paths: '**/migrations/**,**/*.generated.ts'
-          # timeout: '120'
-          # max_diff_size: '60000'
 ```
 
-Every PR now gets a full AI review — no extra config files needed.
+Every PR now gets a full AI review.
 
 ## How it works
 

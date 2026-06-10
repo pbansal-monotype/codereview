@@ -35761,6 +35761,20 @@ function bool(value, fallback) {
         return value === 'true';
     return fallback;
 }
+const SECRET_NAMES = {
+    anthropic: 'ANTHROPIC_API_KEY',
+    openai: 'OPENAI_API_KEY',
+};
+function resolveApiKey(provider) {
+    const fromInput = core.getInput('api_key');
+    if (fromInput)
+        return fromInput;
+    const envName = SECRET_NAMES[provider];
+    const fromEnv = process.env[envName];
+    if (fromEnv)
+        return fromEnv;
+    throw new Error(`No API key found. Either set the "api_key" input or add a "${envName}" secret to your repository.`);
+}
 function loadConfig() {
     const configPath = core.getInput('config_path');
     const fileConfig = loadConfigFile(configPath);
@@ -35789,11 +35803,18 @@ function loadConfig() {
     }
     const ignoreInput = core.getInput('ignore_paths') || str(fileConfig.ignore_paths);
     const timeoutSec = parseInt(core.getInput('timeout') || str(fileConfig.timeout) || '120', 10);
+    const apiKey = resolveApiKey(provider);
+    const githubToken = core.getInput('github_token') ||
+        process.env.GITHUB_TOKEN ||
+        '';
+    if (!githubToken) {
+        throw new Error('No github_token provided and GITHUB_TOKEN env var is not set.');
+    }
     return {
         provider,
-        apiKey: core.getInput('api_key', { required: true }),
+        apiKey,
         model,
-        githubToken: core.getInput('github_token', { required: true }),
+        githubToken,
         categories: {
             security: resolveGuidelines('security'),
             tests: resolveGuidelines('tests'),

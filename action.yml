@@ -13,8 +13,9 @@ inputs:
     default: 'anthropic'
 
   api_key:
-    description: 'API key for the chosen AI provider (use GitHub Secrets)'
-    required: true
+    description: 'API key for the AI provider. If not set, reads from ANTHROPIC_API_KEY or OPENAI_API_KEY secret automatically based on provider.'
+    required: false
+    default: ''
 
   model:
     description: 'Model to use (e.g. "claude-sonnet-4-20250514" for Anthropic, "gpt-4o" for OpenAI)'
@@ -22,8 +23,8 @@ inputs:
     default: ''
 
   github_token:
-    description: 'GitHub token for accessing PR data and posting comments'
-    required: true
+    description: 'GitHub token for accessing PR data and posting comments. Defaults to the built-in GITHUB_TOKEN.'
+    required: false
     default: ${{ github.token }}
 
   config_path:
