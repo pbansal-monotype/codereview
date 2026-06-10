@@ -89,6 +89,7 @@ jobs:
         uses: pbansal-monotype/codereview@main
         with:
           github_token: ${{ github.token }}
+          api_key: ${{ secrets.api_key || secrets.OPENAI_API_KEY || secrets.ANTHROPIC_API_KEY }}
           provider: ${{ inputs.provider || 'anthropic' }}
           model: ${{ inputs.model || '' }}
           review_categories: ${{ inputs.review_categories || 'security,tests,performance,cost' }}
