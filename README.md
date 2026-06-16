@@ -22,12 +22,14 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: pbansal-monotype/codereview@main
         with:
-          provider: 'anthropic'
+          provider: 'openai'
           review_categories: 'security,tests,performance,cost'
           fail_on_critical: 'true'
           security_guidelines: |
@@ -71,9 +73,27 @@ That's it. Every PR now gets an AI review.
 
 ## Input resolution order
 
-Every input follows: **action input > env var > built-in default**.
+Every input follows: **action input (`with:`) > environment variable > built-in default**.
 
-Set org-level GitHub variables/secrets (Settings > Variables/Secrets) to define org-wide defaults. Individual repos can override with repo-level variables or action inputs.
+**Important:** GitHub does not auto-expose secrets or variables as environment variables. You must explicitly pass them via the `env:` block in your workflow. For example, to make your API key available:
+
+```yaml
+env:
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+```
+
+`GITHUB_TOKEN` is the one exception — GitHub makes it available automatically, no mapping needed.
+
+Any org-level or repo-level variable/secret you want the action to read must be mapped in `env:` the same way. For example, to set org-wide security guidelines:
+
+```yaml
+env:
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  SECURITY_GUIDELINES: ${{ vars.SECURITY_GUIDELINES }}
+  EXTRA_INSTRUCTIONS: ${{ vars.EXTRA_INSTRUCTIONS }}
+```
+
+The full env var mapping:
 
 | Action Input | Env Var |
 |--------------|---------|
