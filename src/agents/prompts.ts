@@ -62,8 +62,13 @@ export function buildFileContentsSection(
 ): string {
   if (pr.fileContents.length === 0 || budget <= 500) return '';
 
-  let section = `\n## File Contents (full context)\n`;
-  section += `Use these to understand the complete code structure, imports, types, and surrounding logic.\n\n`;
+  let section = `\n## Full File Contents\n`;
+  section += `IMPORTANT: Read these carefully. They show the complete code surrounding the changes.\n`;
+  section += `Use them to understand:\n`;
+  section += `- The full function/class/module the change lives in\n`;
+  section += `- What patterns sibling functions use (auth, error handling, validation)\n`;
+  section += `- How data flows through imports, types, and helper functions\n`;
+  section += `- Whether the changed code is consistent with the rest of the file\n\n`;
 
   let fileCharsUsed = 0;
   let filesIncluded = 0;
@@ -96,17 +101,28 @@ export function buildSpecialistSystemPrompt(
   const label = CATEGORY_LABELS[categoryId] || categoryId;
 
   let prompt = `You are a ${role}.
-You are reviewing a pull request diff. Your ONLY job is to find **${label}** issues.
+You are reviewing a pull request. Your ONLY job is to find **${label}** issues.
 Do NOT look for anything outside your specialty. Other specialists handle other categories.
 
-RULES:
-1. ONLY flag issues you can prove by pointing to specific changed lines (+ lines) in the diff.
-2. Every finding must be specific: what exact code is wrong, what breaks in production, how to fix it.
-3. Prefer silence over noise. Zero findings is a perfectly valid result — it means the code is solid in your area.
-4. Use the file contents for context ONLY. Don't flag issues in unchanged code.
-5. Max 4 findings. If you found more, keep only the most critical.
+HOW TO REVIEW:
+1. Read the DIFF to see what changed (lines with + are added, - are removed).
+2. Read the FULL FILE CONTENTS to understand the complete context:
+   - What does the full function/class/handler do?
+   - How does data flow through the code?
+   - What patterns do sibling functions use? (Does the changed code match them?)
+   - What error handling, validation, or auth exists around the changed code?
+3. Review the changed code AS PART OF its complete function/API — not as isolated lines.
+   - If a new function is added, review the ENTIRE function: inputs, logic, error handling, output.
+   - If an existing function is modified, understand what the function does end-to-end and whether the change is correct in that context.
+   - If a new API endpoint is added, check the complete handler: auth, validation, business logic, error handling, response.
+4. Your findings should be about the changed code, but USE the surrounding context to judge correctness.
 
-YOUR DOMAIN GUIDELINES:
+QUALITY RULES:
+- Every finding must point to a specific file and line.
+- Every finding must explain: what's wrong → why it matters in production → how to fix it.
+- Prefer silence over noise. Zero findings is a valid and good result.
+- Max 4 findings. Keep only the most critical.
+
 ${guidelines}
 
 ${getSpecialistJsonInstruction()}`;
@@ -125,7 +141,14 @@ export function buildSpecialistUserPrompt(
   let prompt = buildPrMetadata(pr, config);
 
   const diffSection = `\n## Diff (what changed)\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
-  const tailInstruction = `\nReview the diff above. Focus ONLY on your specialty area. Return JSON.`;
+  const tailInstruction = `\nNow review the changes above in your specialty area.
+
+Step 1: For each changed function/class/handler, read its FULL implementation from the file contents.
+Step 2: Understand what it does end-to-end — inputs, processing, outputs, error paths.
+Step 3: Evaluate the changed code in that context. Does it introduce a real issue?
+Step 4: Only create findings for genuine problems you can prove with specific code references.
+
+Return JSON.`;
 
   const budgetForFiles =
     MAX_PROMPT_CHARS -
@@ -147,18 +170,22 @@ export function buildJudgeSystemPrompt(config: ReviewConfig): string {
 Specialist reviewers (security, performance, tests, cost) have already examined the code and produced findings.
 Your job is NOT to re-review the code from scratch. Instead, you must:
 
-1. VERIFY each finding against the diff — does the finding reference real code that actually exists in the changed lines? If the line number or code snippet doesn't match the diff, REJECT the finding.
+1. VERIFY each finding against the diff and file context:
+   - Does the finding reference real code that actually exists?
+   - Is the line number correct?
+   - Does the described issue actually exist when you read the surrounding code?
+   - Could the issue already be handled elsewhere in the function/file?
 2. DEDUPLICATE — if multiple specialists flagged the same underlying issue, keep the best-written one.
-3. RE-CALIBRATE severity — is "critical" really critical? Would you page the on-call team? Downgrade if not.
+3. RE-CALIBRATE severity — is "critical" really critical? Would you page the on-call team at 3am? Downgrade if not.
 4. FILTER noise — remove findings that are:
-   - Vague ("ensure X", "consider Y") without specific code references
-   - About unchanged code (context lines, not + lines)
+   - Vague ("ensure X", "consider Y") without specific code and fix
+   - About patterns that are actually correct when you read the full context
    - Obvious or unhelpful (things any developer would already know)
-   - Speculative without evidence in the diff
-5. SUMMARIZE — write a 1-3 sentence summary of the PR quality and what it does.
+   - Already handled by existing code the specialist missed
+5. SUMMARIZE — write a 1-3 sentence summary of what this PR does and its overall quality.
 
-You are the developer's ally, not their adversary. Only surface findings that will genuinely help.
-An empty findings array means the specialists found nothing noteworthy — that's a GOOD outcome.
+You are the developer's ally. Only surface findings that will genuinely help them ship better code.
+An empty findings array means the code is solid — that's a GOOD outcome.
 
 ${getJudgeJsonInstruction()}`;
 
@@ -181,7 +208,7 @@ export function buildJudgeUserPrompt(
   }
 
   prompt += `\n## Raw Findings from Specialist Reviewers\n`;
-  prompt += `Verify each finding against the diff below. Keep only findings that are real, specific, and actionable.\n\n`;
+  prompt += `Verify each finding against the diff below. Cross-check with the full context — is the issue real, or did the specialist miss surrounding code that already handles it?\n\n`;
 
   let totalFindings = 0;
   for (const result of specialistResults) {
