@@ -1,15 +1,37 @@
 const DEFAULT_IGNORE_PATTERNS = [
+  // dependency directories
   '**/node_modules/**',
+  '**/vendor/**',
+  // build outputs
   '**/dist/**',
   '**/build/**',
-  '**/.git/**',
+  '**/.next/**',
+  '**/out/**',
   '**/coverage/**',
-  '**/*.min.js',
-  '**/*.min.css',
+  // version-control internals
+  '**/.git/**',
+  // lock files (large, machine-generated, no review value)
   '**/package-lock.json',
   '**/yarn.lock',
   '**/pnpm-lock.yaml',
+  '**/bun.lockb',
+  '**/Gemfile.lock',
+  '**/Cargo.lock',
+  '**/go.sum',
+  '**/poetry.lock',
+  // minified / bundled assets
+  '**/*.min.js',
+  '**/*.min.css',
+  '**/*.bundle.js',
+  // source maps
+  '**/*.map',
+  // generated / vendored code
+  '**/*.pb.go',
+  '**/*_generated.*',
+  '**/*.gen.*',
+  // test snapshots
   '**/*.snap',
+  // binary / media assets
   '**/*.png',
   '**/*.jpg',
   '**/*.jpeg',
@@ -20,7 +42,6 @@ const DEFAULT_IGNORE_PATTERNS = [
   '**/*.ttf',
   '**/*.pdf',
   '**/*.zip',
-  '**/*.map',
 ];
 
 function globToRegex(glob: string): RegExp {

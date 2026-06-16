@@ -7,6 +7,6 @@ interface JudgeResult {
     structured: StructuredReview;
     tokens: TokenUsage;
 }
-export declare function runJudge(provider: AIProvider, specialistResults: SpecialistResult[], pr: PullRequestData, config: ReviewConfig, sharedContext: string): Promise<JudgeResult>;
+export declare function runJudge(provider: AIProvider, specialistResults: SpecialistResult[], pr: PullRequestData, config: ReviewConfig, sharedContext: string, enabledCategories: string[]): Promise<JudgeResult>;
 export {};
 //# sourceMappingURL=judge.d.ts.map

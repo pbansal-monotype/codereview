@@ -58,16 +58,26 @@ export async function runReview(
     `Fan-out to ${activeCategories.length} specialists: ${categoryIds.map((id) => CATEGORY_LABELS[id] || id).join(', ')}`,
   );
 
-  // Build shared context once — PR metadata + full file contents + diff.
-  // All specialists and the Judge receive the same pre-built context so the
-  // expensive file-assembly step runs exactly once per review.
-  const sharedContext = buildSharedContext(pr, config);
+  // Build shared context once per ordering variant:
+  //   - Default (test files deprioritized) — used by all specialists except tests.
+  //   - Test-prioritized — used by the tests specialist so test files are never dropped first.
+  const sharedContext = buildSharedContext(pr, config, false);
+  const testSharedContext = categoryIds.includes('tests')
+    ? buildSharedContext(pr, config, true)
+    : sharedContext;
 
   // Stage 1: Fan out to all specialist agents in parallel via allSettled so
   // a single crashed specialist never aborts the rest of the pipeline.
   const settled = await Promise.allSettled(
     activeCategories.map((cat) =>
-      runSpecialistAgent(provider, cat.id, cat.guidelines, pr, config, sharedContext),
+      runSpecialistAgent(
+        provider,
+        cat.id,
+        cat.guidelines,
+        pr,
+        config,
+        cat.id === 'tests' ? testSharedContext : sharedContext,
+      ),
     ),
   );
 
@@ -115,9 +125,9 @@ export async function runReview(
 
   // Stage 2: Judge — verify, deduplicate, recalibrate, cap the final list.
   // Receives the same sharedContext (diff + full files) so it can check every
-  // finding against real code, not just a truncated diff.
-  // Fail-closed: if the judge itself crashes we block the PR rather than
-  // silently shipping unverified findings.
+  // finding against real code.
+  // Fail-closed: if the judge itself crashes (including unrecoverable parse failures)
+  // we block the PR rather than silently shipping unverified findings.
   let judgeTokens = { input: 0, output: 0 };
   let structured;
 
@@ -128,6 +138,7 @@ export async function runReview(
       pr,
       config,
       sharedContext,
+      categoryIds,
     );
     structured = judgeResult.structured;
     judgeTokens = judgeResult.tokens;

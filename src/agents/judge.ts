@@ -17,10 +17,11 @@ export async function runJudge(
   pr: PullRequestData,
   config: ReviewConfig,
   sharedContext: string,
+  enabledCategories: string[],
 ): Promise<JudgeResult> {
   core.info('[judge] Starting quality gate review...');
 
-  const systemPrompt = buildJudgeSystemPrompt(config);
+  const systemPrompt = buildJudgeSystemPrompt(config, enabledCategories);
   const userPrompt = buildJudgeUserPrompt(specialistResults, pr, sharedContext);
 
   const response = await provider.review({
@@ -29,19 +30,40 @@ export async function runJudge(
     timeoutMs: config.timeoutMs,
   });
 
-  let structured: StructuredReview;
+  // Attempt to parse the judge output. On first failure, retry the LLM call once
+  // before failing closed — parse errors are often transient formatting issues.
+  let structured: StructuredReview | undefined;
+  let parseError: unknown;
+
   try {
     structured = response.structured ?? parseStructuredReview(response.review);
-  } catch {
-    core.warning(
-      '[judge] Failed to parse judge output — using raw specialist findings',
-    );
-    const allFindings = specialistResults.flatMap((r) => r.findings);
-    structured = {
-      summary:
-        'Judge review could not parse output. Showing unfiltered specialist findings.',
-      findings: allFindings,
-    };
+  } catch (err) {
+    parseError = err;
+    core.warning('[judge] Failed to parse judge output on first attempt — retrying once...');
+  }
+
+  if (!structured) {
+    // One retry: re-issue the same prompt.
+    const retry = await provider.review({
+      systemPrompt,
+      userPrompt,
+      timeoutMs: config.timeoutMs,
+    });
+    try {
+      structured = retry.structured ?? parseStructuredReview(retry.review);
+      // Merge token counts from both calls.
+      response.inputTokens += retry.inputTokens;
+      response.outputTokens += retry.outputTokens;
+      response.tokensUsed += retry.tokensUsed;
+    } catch (retryErr) {
+      // Both attempts failed — re-throw so the orchestrator's fail-closed path fires.
+      const msg =
+        retryErr instanceof Error ? retryErr.message : String(retryErr);
+      core.error(
+        `[judge] Judge output unparseable after retry (original: ${String(parseError)}; retry: ${msg}) — failing closed`,
+      );
+      throw retryErr;
+    }
   }
 
   core.info(

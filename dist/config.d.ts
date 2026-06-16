@@ -27,11 +27,22 @@ export interface ReviewConfig {
     contextFiles: string[];
     maxFileSize: number;
 }
+/** Token budget helpers — rough estimate: 1 token ≈ 4 characters of English/code text. */
+export declare function charsToTokens(chars: number): number;
+export declare function tokensToChars(tokens: number): number;
+/**
+ * Maximum tokens to include in any single prompt (shared context).
+ * Specialists and judge both operate within this ceiling.
+ * 75 000 tokens ≈ 300 000 chars, matching model context windows for claude-sonnet-4.
+ */
+export declare const MAX_PROMPT_TOKENS = 75000;
+/** Shared severity scale — identical wording used in both specialist and judge prompts. */
+export declare const SEVERITY_RUBRIC = "Severity scale (identical for all agents):\n- \"critical\": would you page the on-call engineer at 3 am? Data loss, auth bypass, crash, secret exposure.\n- \"warning\": real bug but not urgent \u2014 will cause problems but not tonight.\n- \"suggestion\": concrete improvement with specific code; a reasonable engineer would skip it without regret.";
 export declare function getSpecialistJsonInstruction(): string;
 export declare function getJudgeJsonInstruction(): string;
 export declare function loadConfig(): ReviewConfig;
 /**
- * Safe cross-model default for maximum combined prompt size (chars).
- * ~300K chars ≈ ~75K tokens, well within both Claude (200K) and GPT-4o (128K) limits.
+ * Back-compat alias — prefer MAX_PROMPT_TOKENS for new code.
+ * Kept so callers that import MAX_PROMPT_CHARS still compile.
  */
-export declare const MAX_PROMPT_CHARS = 300000;
+export declare const MAX_PROMPT_CHARS: number;

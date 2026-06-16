@@ -6,11 +6,15 @@ export interface Finding {
     confidence: Confidence;
     file?: string;
     line?: number;
+    /** Verbatim code excerpt — the ground truth for locating and verifying the issue. */
+    codeSnippet?: string;
     message: string;
 }
 export interface StructuredReview {
     summary: string;
     findings: Finding[];
+    /** True when the judge output was degraded (e.g. parse failure fallback) and findings have not been verified. */
+    unverified?: boolean;
 }
 export declare function parseStructuredReview(raw: string): StructuredReview;
 /**

@@ -41,6 +41,24 @@ export function formatReviewMarkdown(opts: FormatOptions): string {
     md += `**Secrets redacted:** ${pr.redactionCount} value(s) removed before AI review\n`;
   }
 
+  // Surface any unverified-output warning at the top before findings.
+  if (structured?.unverified) {
+    md += `\n> ⚠️ **Judge output is unverified** — the quality-gate agent returned degraded output. `;
+    md += `Findings below are raw specialist output and have NOT been deduplicated or recalibrated. `;
+    md += `Review manually before acting on these.\n`;
+  }
+
+  // Surface failed specialists prominently — a crashed agent must never look like a clean pass.
+  const failedSpecialists = opts.specialistResults.filter((r) => r.failed);
+  if (failedSpecialists.length > 0) {
+    md += `\n> ⚠️ **${failedSpecialists.length} specialist(s) failed — results are incomplete:**\n`;
+    for (const r of failedSpecialists) {
+      const label = CATEGORY_LABELS[r.categoryId] || r.categoryId;
+      md += `> - **${label}**: ${r.error ?? 'unknown error'}\n`;
+    }
+    md += `> Review these areas manually before merging.\n`;
+  }
+
   if (structured) {
     const criticalCount = structured.findings.filter(
       (f) => f.severity === 'critical',
@@ -49,6 +67,8 @@ export function formatReviewMarkdown(opts: FormatOptions): string {
       md += `\n> 🚨 **${criticalCount} critical issue(s) found — merge blocked**\n`;
     } else if (structured.findings.length > 0) {
       md += `\n> ✅ **No critical issues — ${structured.findings.length} suggestion(s)/warning(s)**\n`;
+    } else if (failedSpecialists.length > 0) {
+      md += `\n> ⚠️ **Incomplete review — see failed specialists above**\n`;
     } else {
       md += `\n> ✅ **All clear — no issues found**\n`;
     }

@@ -38,6 +38,27 @@ const DEFAULT_MODELS: Record<string, string> = {
   openai: 'gpt-4o',
 };
 
+/** Token budget helpers — rough estimate: 1 token ≈ 4 characters of English/code text. */
+export function charsToTokens(chars: number): number {
+  return Math.ceil(chars / 4);
+}
+export function tokensToChars(tokens: number): number {
+  return tokens * 4;
+}
+
+/**
+ * Maximum tokens to include in any single prompt (shared context).
+ * Specialists and judge both operate within this ceiling.
+ * 75 000 tokens ≈ 300 000 chars, matching model context windows for claude-sonnet-4.
+ */
+export const MAX_PROMPT_TOKENS = 75_000;
+
+/** Shared severity scale — identical wording used in both specialist and judge prompts. */
+export const SEVERITY_RUBRIC = `Severity scale (identical for all agents):
+- "critical": would you page the on-call engineer at 3 am? Data loss, auth bypass, crash, secret exposure.
+- "warning": real bug but not urgent — will cause problems but not tonight.
+- "suggestion": concrete improvement with specific code; a reasonable engineer would skip it without regret.`;
+
 // ─── JSON output instructions ──────────────────────────────────────
 
 const SPECIALIST_JSON_INSTRUCTION = `
@@ -49,18 +70,19 @@ You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fen
       "confidence": "high" | "medium" | "low",
       "file": "path/to/file.ts",
       "line": 42,
+      "codeSnippet": "verbatim 1-3 line excerpt of the problematic code (exact text from the file)",
       "message": "What is wrong → Why it matters → How to fix it"
     }
   ]
 }
 
+${SEVERITY_RUBRIC}
+
 RULES:
-- Every finding MUST have a file and line number from the changed code.
+- Every finding MUST have a file and a codeSnippet (verbatim excerpt of the problematic lines). A line number is helpful but the snippet is the ground truth for verification.
 - Message format: "[What] → [Why] → [How]" — all three parts required.
 - "confidence": "high" = you can prove the issue from the code. "medium" = strong inference from patterns and context. "low" = speculating (omit these).
-- Severity: "critical" = would you wake the on-call at 3am? "warning" = real bug but not urgent. "suggestion" = concrete improvement with specific code.
 - An empty findings array is a GOOD response. Don't manufacture issues.
-- Max 4 findings. Keep only the most important ones.
 - ❌ Never: "Ensure...", "Consider...", "Make sure...", "Verify that..." — these are not findings.
 - ❌ Never flag env vars, standard try/catch, or normal error logging.`;
 
@@ -79,12 +101,15 @@ You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fen
       "confidence": "high" | "medium" | "low",
       "file": "path/to/file.ts",
       "line": 42,
+      "codeSnippet": "verbatim 1-3 line excerpt of the problematic code",
       "message": "What is wrong → Why it matters → How to fix it"
     }
   ]
 }
 
-ONLY include findings that passed your verification. Empty findings = clean PR = good outcome.`;
+${SEVERITY_RUBRIC}
+
+ONLY include findings that passed your verification. Remove findings with confidence "low". Empty findings = clean PR = good outcome.`;
 
 export function getJudgeJsonInstruction(): string {
   return JUDGE_JSON_INSTRUCTION;
@@ -209,7 +234,7 @@ export function loadConfig(): ReviewConfig {
 }
 
 /**
- * Safe cross-model default for maximum combined prompt size (chars).
- * ~300K chars ≈ ~75K tokens, well within both Claude (200K) and GPT-4o (128K) limits.
+ * Back-compat alias — prefer MAX_PROMPT_TOKENS for new code.
+ * Kept so callers that import MAX_PROMPT_CHARS still compile.
  */
-export const MAX_PROMPT_CHARS = 300_000;
+export const MAX_PROMPT_CHARS = MAX_PROMPT_TOKENS * 4; // 300 000 chars

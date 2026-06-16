@@ -7,12 +7,16 @@ export interface Finding {
   confidence: Confidence;
   file?: string;
   line?: number;
+  /** Verbatim code excerpt — the ground truth for locating and verifying the issue. */
+  codeSnippet?: string;
   message: string;
 }
 
 export interface StructuredReview {
   summary: string;
   findings: Finding[];
+  /** True when the judge output was degraded (e.g. parse failure fallback) and findings have not been verified. */
+  unverified?: boolean;
 }
 
 const VALID_SEVERITIES = new Set<string>(['critical', 'warning', 'suggestion']);
@@ -84,6 +88,7 @@ export function parseStructuredReview(raw: string): StructuredReview {
         confidence,
         file: f.file,
         line: typeof f.line === 'number' ? f.line : undefined,
+        codeSnippet: typeof f.codeSnippet === 'string' ? f.codeSnippet.trim() : undefined,
         message: normalizeMessage(f.message),
       });
     }
@@ -132,6 +137,7 @@ export function parseSpecialistFindings(raw: string, categoryId: string): Findin
       confidence,
       file: f.file,
       line: typeof f.line === 'number' ? f.line : undefined,
+      codeSnippet: typeof f.codeSnippet === 'string' ? (f.codeSnippet as string).trim() : undefined,
       message: normalizeMessage(f.message as string),
     });
   }
@@ -209,6 +215,9 @@ export function formatFindingsMarkdown(
         ? ` \`${f.file}:${f.line}\``
         : ` \`${f.file}\``;
       md += `- ${icon} **${f.severity.toUpperCase()}**${loc} — ${f.message}\n`;
+      if (f.codeSnippet) {
+        md += `\n  \`\`\`\n  ${f.codeSnippet.replace(/\n/g, '\n  ')}\n  \`\`\`\n`;
+      }
     }
     md += '\n';
   }
