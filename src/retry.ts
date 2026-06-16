@@ -12,14 +12,25 @@ const DEFAULT_RETRY: RetryOptions = {
   timeoutMs: 120_000,
 };
 
+const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503]);
+
 function isRetryable(err: unknown): boolean {
+  if (
+    err != null &&
+    typeof err === 'object' &&
+    'status' in err &&
+    typeof (err as { status: unknown }).status === 'number'
+  ) {
+    return RETRYABLE_STATUS_CODES.has((err as { status: number }).status);
+  }
+
   const msg = err instanceof Error ? err.message : String(err);
   return (
     /rate.?limit/i.test(msg) ||
-    /429/.test(msg) ||
-    /503/.test(msg) ||
-    /502/.test(msg) ||
-    /500/.test(msg) ||
+    /\b429\b/.test(msg) ||
+    /\b503\b/.test(msg) ||
+    /\b502\b/.test(msg) ||
+    /\b500\b/.test(msg) ||
     /timeout/i.test(msg) ||
     /ECONNRESET/i.test(msg) ||
     /overloaded/i.test(msg)

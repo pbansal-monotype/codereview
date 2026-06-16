@@ -13,13 +13,15 @@ export class AnthropicProvider implements AIProvider {
   }
 
   async review(request: ReviewRequest): Promise<ReviewResponse> {
-    const response = await withRetry(() =>
-      this.client.messages.create({
-        model: this.model,
-        max_tokens: 8192,
-        system: request.systemPrompt,
-        messages: [{ role: 'user', content: request.userPrompt }],
-      }),
+    const response = await withRetry(
+      () =>
+        this.client.messages.create({
+          model: this.model,
+          max_tokens: 8192,
+          system: request.systemPrompt,
+          messages: [{ role: 'user', content: request.userPrompt }],
+        }),
+      { timeoutMs: request.timeoutMs },
     );
 
     const text = response.content

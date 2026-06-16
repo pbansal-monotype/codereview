@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { ReviewConfig, CategoryGuidelines, getJsonOutputInstruction } from './config';
+import { ReviewConfig, CategoryGuidelines, getJsonOutputInstruction, MAX_PROMPT_CHARS } from './config';
 import {
   formatFindingsMarkdown,
   hasCriticalFindings,
@@ -63,19 +63,39 @@ function buildCombinedPrompt(
     prompt += `\n### ${label} (category id: "${id}")\n${guidelines.guidelines}\n`;
   }
 
-  // Full file contents for context
-  if (pr.fileContents.length > 0) {
+  const diffSection = `\n## Diff (what changed)\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
+  const tailInstruction = `\nReview the diff for every category above. Use the full file contents for context but focus findings on the changed lines. Return JSON with findings tagged by category id. Include "file" and "line" fields wherever possible so findings can be posted as inline comments.`;
+
+  const budgetForFiles = MAX_PROMPT_CHARS - prompt.length - diffSection.length - tailInstruction.length;
+
+  if (pr.fileContents.length > 0 && budgetForFiles > 500) {
     prompt += `\n## File Contents (full context)\n`;
     prompt += `Use these to understand the complete code structure, imports, types, and surrounding logic.\n\n`;
+
+    let fileCharsUsed = 0;
+    let filesIncluded = 0;
     for (const file of pr.fileContents) {
       const ext = file.path.slice(file.path.lastIndexOf('.') + 1);
-      prompt += `### ${file.path}${file.truncated ? ' (truncated)' : ''}\n`;
-      prompt += `\`\`\`${ext}\n${file.content}\n\`\`\`\n\n`;
+      const block = `### ${file.path}${file.truncated ? ' (truncated)' : ''}\n\`\`\`${ext}\n${file.content}\n\`\`\`\n\n`;
+      if (fileCharsUsed + block.length > budgetForFiles) {
+        const remaining = pr.fileContents.length - filesIncluded;
+        core.warning(
+          `Prompt budget exceeded (${MAX_PROMPT_CHARS} chars). Dropped ${remaining} file(s) from context to fit within model limits.`,
+        );
+        break;
+      }
+      prompt += block;
+      fileCharsUsed += block.length;
+      filesIncluded++;
     }
+  } else if (pr.fileContents.length > 0) {
+    core.warning(
+      `Prompt too large even without file contents (${prompt.length + diffSection.length} chars). File context omitted entirely.`,
+    );
   }
 
-  prompt += `\n## Diff (what changed)\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
-  prompt += `\nReview the diff for every category above. Use the full file contents for context but focus findings on the changed lines. Return JSON with findings tagged by category id. Include "file" and "line" fields wherever possible so findings can be posted as inline comments.`;
+  prompt += diffSection;
+  prompt += tailInstruction;
 
   return prompt;
 }
@@ -141,7 +161,7 @@ export async function runReview(
 
   let response: ReviewResponse;
   try {
-    response = await provider.review({ systemPrompt, userPrompt });
+    response = await provider.review({ systemPrompt, userPrompt, timeoutMs: config.timeoutMs });
     core.info(`Review complete (${response.tokensUsed} tokens)`);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

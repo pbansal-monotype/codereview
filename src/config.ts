@@ -79,7 +79,7 @@ const DEFAULT_GUIDELINES: Record<string, string> = {
 };
 
 const JSON_OUTPUT_INSTRUCTION = `
-You MUST respond with valid JSON only (no markdown fences). Schema:
+You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fence. Schema:
 {
   "summary": "1-3 sentence overall assessment",
   "findings": [
@@ -214,3 +214,9 @@ export function loadConfig(): ReviewConfig {
 export function getJsonOutputInstruction(): string {
   return JSON_OUTPUT_INSTRUCTION;
 }
+
+/**
+ * Safe cross-model default for maximum combined prompt size (chars).
+ * ~300K chars ≈ ~75K tokens, well within both Claude (200K) and GPT-4o (128K) limits.
+ */
+export const MAX_PROMPT_CHARS = 300_000;

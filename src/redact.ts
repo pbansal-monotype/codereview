@@ -37,6 +37,7 @@ export function redactSecrets(text: string): string {
 }
 
 export function countRedactions(original: string, redacted: string): number {
-  const matches = redacted.match(/\[REDACTED\]/g);
-  return matches?.length ?? 0;
+  const originalCount = (original.match(/\[REDACTED\]/g) ?? []).length;
+  const redactedCount = (redacted.match(/\[REDACTED\]/g) ?? []).length;
+  return Math.max(0, redactedCount - originalCount);
 }

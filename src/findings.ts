@@ -51,13 +51,34 @@ export function hasCriticalFindings(review: StructuredReview): boolean {
 export function extractJson(text: string): string {
   const trimmed = text.trim();
 
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenced) return fenced[1].trim();
+  const fencedBlocks = [...trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)];
+  if (fencedBlocks.length > 0) {
+    const last = fencedBlocks[fencedBlocks.length - 1];
+    return last[1].trim();
+  }
 
   const start = trimmed.indexOf('{');
   const end = trimmed.lastIndexOf('}');
   if (start !== -1 && end > start) {
-    return trimmed.slice(start, end + 1);
+    const candidate = trimmed.slice(start, end + 1);
+    try {
+      JSON.parse(candidate);
+      return candidate;
+    } catch {
+      // First-to-last braces didn't produce valid JSON; try finding the
+      // largest balanced top-level object
+      for (let i = end; i > start; i--) {
+        if (trimmed[i] !== '}') continue;
+        const slice = trimmed.slice(start, i + 1);
+        try {
+          JSON.parse(slice);
+          return slice;
+        } catch {
+          continue;
+        }
+      }
+      return candidate;
+    }
   }
 
   return trimmed;

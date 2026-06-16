@@ -13,16 +13,18 @@ export class OpenAIProvider implements AIProvider {
   }
 
   async review(request: ReviewRequest): Promise<ReviewResponse> {
-    const response = await withRetry(() =>
-      this.client.chat.completions.create({
-        model: this.model,
-        max_tokens: 8192,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: request.systemPrompt },
-          { role: 'user', content: request.userPrompt },
-        ],
-      }),
+    const response = await withRetry(
+      () =>
+        this.client.chat.completions.create({
+          model: this.model,
+          max_tokens: 8192,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: request.systemPrompt },
+            { role: 'user', content: request.userPrompt },
+          ],
+        }),
+      { timeoutMs: request.timeoutMs },
     );
 
     const text = response.choices[0]?.message?.content ?? '';

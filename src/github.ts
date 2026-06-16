@@ -4,6 +4,54 @@ import { filterDiffByFiles, shouldIgnoreFile } from './ignore';
 import { parseDiffForCommentTargets } from './diff-parser';
 import { Finding } from './findings';
 
+// ─── GitHub API rate-limit awareness ────────────────────────────────
+
+const RATE_LIMIT_WARN_THRESHOLD = 100;
+
+function checkRateLimitHeaders(headers: Record<string, string | undefined>): void {
+  const remaining = headers['x-ratelimit-remaining'];
+  if (remaining === undefined) return;
+
+  const remainingNum = parseInt(remaining, 10);
+  if (Number.isNaN(remainingNum)) return;
+
+  if (remainingNum <= 0) {
+    const resetEpoch = parseInt(headers['x-ratelimit-reset'] ?? '0', 10);
+    const waitSec = Math.max(0, resetEpoch - Math.floor(Date.now() / 1000));
+    core.warning(
+      `GitHub API rate limit exhausted. Resets in ${waitSec}s. Subsequent requests may fail.`,
+    );
+  } else if (remainingNum < RATE_LIMIT_WARN_THRESHOLD) {
+    core.warning(
+      `GitHub API rate limit running low: ${remainingNum} requests remaining.`,
+    );
+  }
+}
+
+async function ghRequest<T>(
+  fn: () => Promise<{ data: T; headers: Record<string, string | undefined> }>,
+  label: string,
+): Promise<T> {
+  try {
+    const response = await fn();
+    checkRateLimitHeaders(response.headers);
+    return response.data;
+  } catch (err: unknown) {
+    if (
+      err != null &&
+      typeof err === 'object' &&
+      'status' in err &&
+      (err as { status: number }).status === 403
+    ) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/rate limit/i.test(msg)) {
+        core.error(`GitHub API rate limit hit during ${label}. Aborting.`);
+      }
+    }
+    throw err;
+  }
+}
+
 export interface FileContent {
   path: string;
   content: string;
@@ -201,6 +249,14 @@ function smartTruncateDiff(diff: string, maxSize: number): string {
     }
   }
 
+  if (kept.length === 0 && scored.length > 0) {
+    const largest = scored[0];
+    core.warning(
+      `All diff chunks exceed maxDiffSize (${maxSize}). Force-including a truncated version of ${largest.filename}.`,
+    );
+    kept.push(largest.chunk.slice(0, maxSize));
+  }
+
   let result = kept.join('');
   if (skipped.length > 0) {
     result += `\n\n... [${skipped.length} file(s) truncated: ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '...' : ''}] ...`;
@@ -218,6 +274,23 @@ const BINARY_EXTENSIONS = new Set([
   '.wasm', '.pyc', '.class', '.o', '.so', '.dll',
 ]);
 
+const FETCH_CONCURRENCY = 10;
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let index = 0;
+  async function worker(): Promise<void> {
+    while (index < items.length) {
+      const i = index++;
+      await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+}
+
 async function fetchFileContents(
   octokit: ReturnType<typeof github.getOctokit>,
   owner: string,
@@ -229,19 +302,19 @@ async function fetchFileContents(
 ): Promise<FileContent[]> {
   const results: FileContent[] = [];
 
-  for (const filePath of files) {
+  const filePaths = [...files].filter((filePath) => {
     const ext = filePath.slice(filePath.lastIndexOf('.'));
-    if (BINARY_EXTENSIONS.has(ext.toLowerCase())) continue;
+    return !BINARY_EXTENSIONS.has(ext.toLowerCase());
+  });
 
+  await runWithConcurrency(filePaths, FETCH_CONCURRENCY, async (filePath) => {
     try {
-      const { data } = await octokit.rest.repos.getContent({
-        owner,
-        repo,
-        path: filePath,
-        ref,
-      });
+      const data = await ghRequest(
+        () => octokit.rest.repos.getContent({ owner, repo, path: filePath, ref }) as Promise<{ data: { type?: string; content?: string }; headers: Record<string, string | undefined> }>,
+        `getContent(${filePath})`,
+      );
 
-      if (!('content' in data) || data.type !== 'file') continue;
+      if (!data.content || data.type !== 'file') return;
 
       let content = Buffer.from(data.content, 'base64').toString('utf-8');
       let truncated = false;
@@ -260,7 +333,7 @@ async function fetchFileContents(
     } catch {
       // File might not exist on the head branch (deleted file) — skip
     }
-  }
+  });
 
   return results;
 }
@@ -296,14 +369,22 @@ async function upsertComment(
   marker: string,
   body: string,
 ): Promise<void> {
-  const { data: comments } = await octokit.rest.issues.listComments({
-    owner,
-    repo,
-    issue_number: prNumber,
-    per_page: 100,
-  });
+  let existing: { id: number } | undefined;
+  let page = 1;
 
-  const existing = comments.find((c) => c.body?.includes(marker));
+  while (!existing) {
+    const { data: comments } = await octokit.rest.issues.listComments({
+      owner,
+      repo,
+      issue_number: prNumber,
+      per_page: 100,
+      page,
+    });
+
+    existing = comments.find((c) => c.body?.includes(marker));
+    if (existing || comments.length < 100) break;
+    page++;
+  }
 
   if (existing) {
     await octokit.rest.issues.updateComment({
@@ -370,24 +451,68 @@ export async function postInlineReview(
   const octokit = github.getOctokit(token);
   const { owner, repo } = github.context.repo;
 
+  const existingBotComments = await listExistingBotReviewComments(
+    octokit, owner, repo, prNumber,
+  );
+  const newComments = comments.filter(
+    (c) => !existingBotComments.has(`${c.path}:${c.line}:${c.body}`),
+  );
+
+  if (newComments.length === 0) {
+    core.info('All inline findings already posted — skipping duplicates.');
+    return { posted: 0, skipped };
+  }
+
   try {
     await octokit.rest.pulls.createReview({
       owner,
       repo,
       pull_number: prNumber,
       event: 'COMMENT',
-      body: `🤖 AI PR Reviewer — ${comments.length} inline finding(s)`,
-      comments: comments.map((c) => ({
+      body: `🤖 AI PR Reviewer — ${newComments.length} inline finding(s)`,
+      comments: newComments.map((c) => ({
         path: c.path,
         line: c.line,
         body: c.body,
       })),
     });
-    core.info(`Posted ${comments.length} inline review comment(s)`);
-    return { posted: comments.length, skipped };
+    core.info(`Posted ${newComments.length} inline review comment(s) (${comments.length - newComments.length} duplicates skipped)`);
+    return { posted: newComments.length, skipped };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     core.warning(`Failed to post inline review (falling back to summary): ${msg}`);
-    return { posted: 0, skipped: skipped + comments.length };
+    return { posted: 0, skipped: skipped + newComments.length };
   }
+}
+
+async function listExistingBotReviewComments(
+  octokit: ReturnType<typeof github.getOctokit>,
+  owner: string,
+  repo: string,
+  prNumber: number,
+): Promise<Set<string>> {
+  const keys = new Set<string>();
+  let page = 1;
+
+  while (true) {
+    const { data: comments } = await octokit.rest.pulls.listReviewComments({
+      owner,
+      repo,
+      pull_number: prNumber,
+      per_page: 100,
+      page,
+    });
+
+    for (const c of comments) {
+      if (c.body?.includes('**CRITICAL**') || c.body?.includes('**WARNING**') || c.body?.includes('**SUGGESTION**')) {
+        const line = c.line ?? c.original_line ?? 0;
+        keys.add(`${c.path}:${line}:${c.body}`);
+      }
+    }
+
+    if (comments.length < 100) break;
+    page++;
+  }
+
+  return keys;
 }
