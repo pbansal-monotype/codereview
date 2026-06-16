@@ -2,6 +2,7 @@ import { StructuredReview } from '../findings';
 export interface ReviewRequest {
     systemPrompt: string;
     userPrompt: string;
+    timeoutMs?: number;
 }
 export interface ReviewResponse {
     review: string;

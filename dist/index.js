@@ -35677,6 +35677,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.MAX_PROMPT_CHARS = void 0;
 exports.loadConfig = loadConfig;
 exports.getJsonOutputInstruction = getJsonOutputInstruction;
 const core = __importStar(__nccwpck_require__(7484));
@@ -35723,7 +35724,7 @@ const DEFAULT_GUIDELINES = {
 - Database query patterns that affect billing`,
 };
 const JSON_OUTPUT_INSTRUCTION = `
-You MUST respond with valid JSON only (no markdown fences). Schema:
+You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fence. Schema:
 {
   "summary": "1-3 sentence overall assessment",
   "findings": [
@@ -35843,6 +35844,11 @@ function loadConfig() {
 function getJsonOutputInstruction() {
     return JSON_OUTPUT_INSTRUCTION;
 }
+/**
+ * Safe cross-model default for maximum combined prompt size (chars).
+ * ~300K chars ≈ ~75K tokens, well within both Claude (200K) and GPT-4o (128K) limits.
+ */
+exports.MAX_PROMPT_CHARS = 300_000;
 
 
 /***/ }),
@@ -35994,13 +36000,36 @@ function hasCriticalFindings(review) {
 }
 function extractJson(text) {
     const trimmed = text.trim();
-    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fenced)
-        return fenced[1].trim();
+    const fencedBlocks = [...trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)];
+    if (fencedBlocks.length > 0) {
+        const last = fencedBlocks[fencedBlocks.length - 1];
+        return last[1].trim();
+    }
     const start = trimmed.indexOf('{');
     const end = trimmed.lastIndexOf('}');
     if (start !== -1 && end > start) {
-        return trimmed.slice(start, end + 1);
+        const candidate = trimmed.slice(start, end + 1);
+        try {
+            JSON.parse(candidate);
+            return candidate;
+        }
+        catch {
+            // First-to-last braces didn't produce valid JSON; try finding the
+            // largest balanced top-level object
+            for (let i = end; i > start; i--) {
+                if (trimmed[i] !== '}')
+                    continue;
+                const slice = trimmed.slice(start, i + 1);
+                try {
+                    JSON.parse(slice);
+                    return slice;
+                }
+                catch {
+                    continue;
+                }
+            }
+            return candidate;
+        }
     }
     return trimmed;
 }
@@ -36095,6 +36124,43 @@ const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const ignore_1 = __nccwpck_require__(7237);
 const diff_parser_1 = __nccwpck_require__(6290);
+// ─── GitHub API rate-limit awareness ────────────────────────────────
+const RATE_LIMIT_WARN_THRESHOLD = 100;
+function checkRateLimitHeaders(headers) {
+    const remaining = headers['x-ratelimit-remaining'];
+    if (remaining === undefined)
+        return;
+    const remainingNum = parseInt(remaining, 10);
+    if (Number.isNaN(remainingNum))
+        return;
+    if (remainingNum <= 0) {
+        const resetEpoch = parseInt(headers['x-ratelimit-reset'] ?? '0', 10);
+        const waitSec = Math.max(0, resetEpoch - Math.floor(Date.now() / 1000));
+        core.warning(`GitHub API rate limit exhausted. Resets in ${waitSec}s. Subsequent requests may fail.`);
+    }
+    else if (remainingNum < RATE_LIMIT_WARN_THRESHOLD) {
+        core.warning(`GitHub API rate limit running low: ${remainingNum} requests remaining.`);
+    }
+}
+async function ghRequest(fn, label) {
+    try {
+        const response = await fn();
+        checkRateLimitHeaders(response.headers);
+        return response.data;
+    }
+    catch (err) {
+        if (err != null &&
+            typeof err === 'object' &&
+            'status' in err &&
+            err.status === 403) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (/rate limit/i.test(msg)) {
+                core.error(`GitHub API rate limit hit during ${label}. Aborting.`);
+            }
+        }
+        throw err;
+    }
+}
 async function listAllChangedFiles(octokit, owner, repo, prNumber) {
     const filenames = [];
     let page = 1;
@@ -36215,6 +36281,11 @@ function smartTruncateDiff(diff, maxSize) {
             skipped.push(filename);
         }
     }
+    if (kept.length === 0 && scored.length > 0) {
+        const largest = scored[0];
+        core.warning(`All diff chunks exceed maxDiffSize (${maxSize}). Force-including a truncated version of ${largest.filename}.`);
+        kept.push(largest.chunk.slice(0, maxSize));
+    }
     let result = kept.join('');
     if (skipped.length > 0) {
         result += `\n\n... [${skipped.length} file(s) truncated: ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '...' : ''}] ...`;
@@ -36229,21 +36300,28 @@ const BINARY_EXTENSIONS = new Set([
     '.mp3', '.mp4', '.mov', '.avi',
     '.wasm', '.pyc', '.class', '.o', '.so', '.dll',
 ]);
+const FETCH_CONCURRENCY = 10;
+async function runWithConcurrency(items, concurrency, fn) {
+    let index = 0;
+    async function worker() {
+        while (index < items.length) {
+            const i = index++;
+            await fn(items[i]);
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+}
 async function fetchFileContents(octokit, owner, repo, ref, files, maxFileSize, redactSecretsEnabled) {
     const results = [];
-    for (const filePath of files) {
+    const filePaths = [...files].filter((filePath) => {
         const ext = filePath.slice(filePath.lastIndexOf('.'));
-        if (BINARY_EXTENSIONS.has(ext.toLowerCase()))
-            continue;
+        return !BINARY_EXTENSIONS.has(ext.toLowerCase());
+    });
+    await runWithConcurrency(filePaths, FETCH_CONCURRENCY, async (filePath) => {
         try {
-            const { data } = await octokit.rest.repos.getContent({
-                owner,
-                repo,
-                path: filePath,
-                ref,
-            });
-            if (!('content' in data) || data.type !== 'file')
-                continue;
+            const data = await ghRequest(() => octokit.rest.repos.getContent({ owner, repo, path: filePath, ref }), `getContent(${filePath})`);
+            if (!data.content || data.type !== 'file')
+                return;
             let content = Buffer.from(data.content, 'base64').toString('utf-8');
             let truncated = false;
             if (content.length > maxFileSize) {
@@ -36259,7 +36337,7 @@ async function fetchFileContents(octokit, owner, repo, ref, files, maxFileSize, 
         catch {
             // File might not exist on the head branch (deleted file) — skip
         }
-    }
+    });
     return results;
 }
 // ─── Comment posting ────────────────────────────────────────────────
@@ -36277,13 +36355,21 @@ async function postReviewComment(token, prNumber, body) {
     await upsertComment(octokit, owner, repo, prNumber, marker, fullBody);
 }
 async function upsertComment(octokit, owner, repo, prNumber, marker, body) {
-    const { data: comments } = await octokit.rest.issues.listComments({
-        owner,
-        repo,
-        issue_number: prNumber,
-        per_page: 100,
-    });
-    const existing = comments.find((c) => c.body?.includes(marker));
+    let existing;
+    let page = 1;
+    while (!existing) {
+        const { data: comments } = await octokit.rest.issues.listComments({
+            owner,
+            repo,
+            issue_number: prNumber,
+            per_page: 100,
+            page,
+        });
+        existing = comments.find((c) => c.body?.includes(marker));
+        if (existing || comments.length < 100)
+            break;
+        page++;
+    }
     if (existing) {
         await octokit.rest.issues.updateComment({
             owner,
@@ -36334,27 +36420,56 @@ async function postInlineReview(token, prNumber, diff, findings) {
     }
     const octokit = github.getOctokit(token);
     const { owner, repo } = github.context.repo;
+    const existingBotComments = await listExistingBotReviewComments(octokit, owner, repo, prNumber);
+    const newComments = comments.filter((c) => !existingBotComments.has(`${c.path}:${c.line}:${c.body}`));
+    if (newComments.length === 0) {
+        core.info('All inline findings already posted — skipping duplicates.');
+        return { posted: 0, skipped };
+    }
     try {
         await octokit.rest.pulls.createReview({
             owner,
             repo,
             pull_number: prNumber,
             event: 'COMMENT',
-            body: `🤖 AI PR Reviewer — ${comments.length} inline finding(s)`,
-            comments: comments.map((c) => ({
+            body: `🤖 AI PR Reviewer — ${newComments.length} inline finding(s)`,
+            comments: newComments.map((c) => ({
                 path: c.path,
                 line: c.line,
                 body: c.body,
             })),
         });
-        core.info(`Posted ${comments.length} inline review comment(s)`);
-        return { posted: comments.length, skipped };
+        core.info(`Posted ${newComments.length} inline review comment(s) (${comments.length - newComments.length} duplicates skipped)`);
+        return { posted: newComments.length, skipped };
     }
     catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         core.warning(`Failed to post inline review (falling back to summary): ${msg}`);
-        return { posted: 0, skipped: skipped + comments.length };
+        return { posted: 0, skipped: skipped + newComments.length };
     }
+}
+async function listExistingBotReviewComments(octokit, owner, repo, prNumber) {
+    const keys = new Set();
+    let page = 1;
+    while (true) {
+        const { data: comments } = await octokit.rest.pulls.listReviewComments({
+            owner,
+            repo,
+            pull_number: prNumber,
+            per_page: 100,
+            page,
+        });
+        for (const c of comments) {
+            if (c.body?.includes('**CRITICAL**') || c.body?.includes('**WARNING**') || c.body?.includes('**SUGGESTION**')) {
+                const line = c.line ?? c.original_line ?? 0;
+                keys.add(`${c.path}:${line}:${c.body}`);
+            }
+        }
+        if (comments.length < 100)
+            break;
+        page++;
+    }
+    return keys;
 }
 
 
@@ -36585,7 +36700,7 @@ class AnthropicProvider {
             max_tokens: 8192,
             system: request.systemPrompt,
             messages: [{ role: 'user', content: request.userPrompt }],
-        }));
+        }), { timeoutMs: request.timeoutMs });
         const text = response.content
             .filter((block) => block.type === 'text')
             .map((block) => block.text)
@@ -36665,7 +36780,7 @@ class OpenAIProvider {
                 { role: 'system', content: request.systemPrompt },
                 { role: 'user', content: request.userPrompt },
             ],
-        }));
+        }), { timeoutMs: request.timeoutMs });
         const text = response.choices[0]?.message?.content ?? '';
         const inputTokens = response.usage?.prompt_tokens ?? 0;
         const outputTokens = response.usage?.completion_tokens ?? 0;
@@ -36733,8 +36848,9 @@ function redactSecrets(text) {
     return result;
 }
 function countRedactions(original, redacted) {
-    const matches = redacted.match(/\[REDACTED\]/g);
-    return matches?.length ?? 0;
+    const originalCount = (original.match(/\[REDACTED\]/g) ?? []).length;
+    const redactedCount = (redacted.match(/\[REDACTED\]/g) ?? []).length;
+    return Math.max(0, redactedCount - originalCount);
 }
 
 
@@ -36753,13 +36869,20 @@ const DEFAULT_RETRY = {
     maxDelayMs: 15000,
     timeoutMs: 120_000,
 };
+const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503]);
 function isRetryable(err) {
+    if (err != null &&
+        typeof err === 'object' &&
+        'status' in err &&
+        typeof err.status === 'number') {
+        return RETRYABLE_STATUS_CODES.has(err.status);
+    }
     const msg = err instanceof Error ? err.message : String(err);
     return (/rate.?limit/i.test(msg) ||
-        /429/.test(msg) ||
-        /503/.test(msg) ||
-        /502/.test(msg) ||
-        /500/.test(msg) ||
+        /\b429\b/.test(msg) ||
+        /\b503\b/.test(msg) ||
+        /\b502\b/.test(msg) ||
+        /\b500\b/.test(msg) ||
         /timeout/i.test(msg) ||
         /ECONNRESET/i.test(msg) ||
         /overloaded/i.test(msg));
@@ -36882,18 +37005,32 @@ function buildCombinedPrompt(activeCategories, pr, config) {
         const label = CATEGORY_LABELS[id] || id;
         prompt += `\n### ${label} (category id: "${id}")\n${guidelines.guidelines}\n`;
     }
-    // Full file contents for context
-    if (pr.fileContents.length > 0) {
+    const diffSection = `\n## Diff (what changed)\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
+    const tailInstruction = `\nReview the diff for every category above. Use the full file contents for context but focus findings on the changed lines. Return JSON with findings tagged by category id. Include "file" and "line" fields wherever possible so findings can be posted as inline comments.`;
+    const budgetForFiles = config_1.MAX_PROMPT_CHARS - prompt.length - diffSection.length - tailInstruction.length;
+    if (pr.fileContents.length > 0 && budgetForFiles > 500) {
         prompt += `\n## File Contents (full context)\n`;
         prompt += `Use these to understand the complete code structure, imports, types, and surrounding logic.\n\n`;
+        let fileCharsUsed = 0;
+        let filesIncluded = 0;
         for (const file of pr.fileContents) {
             const ext = file.path.slice(file.path.lastIndexOf('.') + 1);
-            prompt += `### ${file.path}${file.truncated ? ' (truncated)' : ''}\n`;
-            prompt += `\`\`\`${ext}\n${file.content}\n\`\`\`\n\n`;
+            const block = `### ${file.path}${file.truncated ? ' (truncated)' : ''}\n\`\`\`${ext}\n${file.content}\n\`\`\`\n\n`;
+            if (fileCharsUsed + block.length > budgetForFiles) {
+                const remaining = pr.fileContents.length - filesIncluded;
+                core.warning(`Prompt budget exceeded (${config_1.MAX_PROMPT_CHARS} chars). Dropped ${remaining} file(s) from context to fit within model limits.`);
+                break;
+            }
+            prompt += block;
+            fileCharsUsed += block.length;
+            filesIncluded++;
         }
     }
-    prompt += `\n## Diff (what changed)\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
-    prompt += `\nReview the diff for every category above. Use the full file contents for context but focus findings on the changed lines. Return JSON with findings tagged by category id. Include "file" and "line" fields wherever possible so findings can be posted as inline comments.`;
+    else if (pr.fileContents.length > 0) {
+        core.warning(`Prompt too large even without file contents (${prompt.length + diffSection.length} chars). File context omitted entirely.`);
+    }
+    prompt += diffSection;
+    prompt += tailInstruction;
     return prompt;
 }
 async function runReview(provider, config, pr) {
@@ -36934,7 +37071,7 @@ async function runReview(provider, config, pr) {
     const userPrompt = buildCombinedPrompt(activeCategories, pr, config);
     let response;
     try {
-        response = await provider.review({ systemPrompt, userPrompt });
+        response = await provider.review({ systemPrompt, userPrompt, timeoutMs: config.timeoutMs });
         core.info(`Review complete (${response.tokensUsed} tokens)`);
     }
     catch (err) {
