@@ -407,6 +407,23 @@ async function upsertComment(
 
 // ─── Inline review comments ────────────────────────────────────────
 
+function findNearestValidLine(
+  targetLine: number,
+  validLines: Set<number>,
+): number | undefined {
+  if (validLines.size === 0) return undefined;
+  let nearest: number | undefined;
+  let minDist = Infinity;
+  for (const line of validLines) {
+    const dist = Math.abs(line - targetLine);
+    if (dist < minDist) {
+      minDist = dist;
+      nearest = line;
+    }
+  }
+  return nearest;
+}
+
 export async function postInlineReview(
   token: string,
   prNumber: number,
@@ -425,9 +442,22 @@ export async function postInlineReview(
 
   for (const finding of findingsWithLocation) {
     const fileTargets = validTargets.get(finding.file!);
-    if (!fileTargets || !fileTargets.has(finding.line!)) {
+    if (!fileTargets || fileTargets.size === 0) {
       skipped++;
       continue;
+    }
+
+    let line = finding.line!;
+    let relocated = false;
+
+    if (!fileTargets.has(line)) {
+      const nearest = findNearestValidLine(line, fileTargets);
+      if (!nearest) {
+        skipped++;
+        continue;
+      }
+      line = nearest;
+      relocated = true;
     }
 
     const icon =
@@ -437,11 +467,12 @@ export async function postInlineReview(
           ? '🟡'
           : '🔵';
 
-    comments.push({
-      path: finding.file!,
-      line: finding.line!,
-      body: `${icon} **${finding.severity.toUpperCase()}** — ${finding.message}`,
-    });
+    let body = `${icon} **${finding.severity.toUpperCase()}** — ${finding.message}`;
+    if (relocated) {
+      body = `📍 *Refers to line ${finding.line}*\n\n${body}`;
+    }
+
+    comments.push({ path: finding.file!, line, body });
   }
 
   if (comments.length === 0) {
