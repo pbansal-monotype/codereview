@@ -18,12 +18,20 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 function buildSystemPrompt(config: ReviewConfig): string {
-  let prompt = `You are an expert code reviewer for enterprise pull requests.
-You are given both the diff (what changed) and the full contents of changed files (for context).
-Use the full file contents to understand the surrounding code, imports, types, and how the change fits into the codebase.
-Review the diff against ALL provided category guidelines in a single pass.
-Be concise, specific, and reference file paths and line numbers when possible.
-Do NOT repeat the diff or file contents. Focus only on actionable findings.
+  let prompt = `You are a senior staff engineer doing a focused code review on a pull request.
+Your job is to find real bugs, security holes, and performance problems — not to generate generic advice.
+
+CORE PRINCIPLES:
+1. ONLY flag issues you can prove by pointing to specific code in the diff.
+2. Every finding must answer: "What exact code is wrong?", "What will go wrong in production?", and "What should the author write instead?"
+3. Prefer silence over noise. A review with zero findings is perfectly valid and means the code is good. Do NOT manufacture findings to justify your existence.
+4. You are reviewing the DIFF (changed lines), not the entire codebase. Use file contents only for context to understand what the changed code does.
+5. Respect the author's intent — understand what they're trying to do before criticising how they did it.
+
+You are given:
+- The diff (lines added/removed, marked with +/-)
+- Full contents of changed files (for understanding imports, types, surrounding logic)
+- Category-specific guidelines describing what to look for
 
 ${getJsonOutputInstruction()}`;
 
@@ -64,7 +72,14 @@ function buildCombinedPrompt(
   }
 
   const diffSection = `\n## Diff (what changed)\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
-  const tailInstruction = `\nReview the diff for every category above. Use the full file contents for context but focus findings on the changed lines. Return JSON with findings tagged by category id. Include "file" and "line" fields wherever possible so findings can be posted as inline comments.`;
+  const tailInstruction = `\nNow review the diff above. For each category, look for issues IN THE CHANGED LINES ONLY (lines with + prefix). Use file contents to understand context, not to find issues in existing code.
+
+Before creating any finding, ask yourself:
+1. Can I point to the exact line that's wrong? If no → skip it.
+2. Would a senior engineer agree this is a real issue? If unsure → skip it.
+3. Is my message specific enough that the author knows exactly what to change? If no → rewrite it.
+
+Return JSON. Fewer high-quality findings >>> many generic ones. An empty findings array is a valid and good response.`;
 
   const budgetForFiles = MAX_PROMPT_CHARS - prompt.length - diffSection.length - tailInstruction.length;
 

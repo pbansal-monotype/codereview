@@ -1,8 +1,10 @@
 export type Severity = 'critical' | 'warning' | 'suggestion';
+export type Confidence = 'high' | 'medium' | 'low';
 
 export interface Finding {
   category: string;
   severity: Severity;
+  confidence: Confidence;
   file?: string;
   line?: number;
   message: string;
@@ -14,6 +16,27 @@ export interface StructuredReview {
 }
 
 const VALID_SEVERITIES = new Set<string>(['critical', 'warning', 'suggestion']);
+const VALID_CONFIDENCES = new Set<string>(['high', 'medium', 'low']);
+
+const MAX_FINDINGS = 8;
+
+const VAGUE_PATTERNS = [
+  /^ensure\b/i,
+  /^make sure\b/i,
+  /^consider\b/i,
+  /^verify that\b/i,
+  /^check that\b/i,
+  /^be careful\b/i,
+  /\bshould be\b.*\bproperly\b/i,
+  /\bpotentially\b.*\bvulnerable\b/i,
+  /\bcould potentially\b/i,
+  /\bmay lead to\b.*\bissues\b/i,
+  /\bmight cause\b.*\bproblems\b/i,
+];
+
+function isVagueFinding(message: string): boolean {
+  return VAGUE_PATTERNS.some((pattern) => pattern.test(message.trim()));
+}
 
 export function parseStructuredReview(raw: string): StructuredReview {
   const json = extractJson(raw);
@@ -31,17 +54,36 @@ export function parseStructuredReview(raw: string): StructuredReview {
       if (!f.message || typeof f.message !== 'string') continue;
       if (!f.category || typeof f.category !== 'string') continue;
 
+      const confidence = VALID_CONFIDENCES.has(String(f.confidence ?? '').toLowerCase())
+        ? (String(f.confidence).toLowerCase() as Confidence)
+        : 'medium';
+
+      if (confidence === 'low') continue;
+
+      if (isVagueFinding(f.message)) continue;
+
+      if (!f.file || typeof f.file !== 'string') continue;
+
       findings.push({
         category: f.category,
         severity: severity as Severity,
-        file: typeof f.file === 'string' ? f.file : undefined,
+        confidence,
+        file: f.file,
         line: typeof f.line === 'number' ? f.line : undefined,
         message: f.message,
       });
     }
   }
 
-  return { summary, findings };
+  const sorted = findings.sort((a, b) => {
+    const severityOrder: Record<string, number> = { critical: 0, warning: 1, suggestion: 2 };
+    const confOrder: Record<string, number> = { high: 0, medium: 1 };
+    const sDiff = (severityOrder[a.severity] ?? 2) - (severityOrder[b.severity] ?? 2);
+    if (sDiff !== 0) return sDiff;
+    return (confOrder[a.confidence] ?? 1) - (confOrder[b.confidence] ?? 1);
+  });
+
+  return { summary, findings: sorted.slice(0, MAX_FINDINGS) };
 }
 
 export function hasCriticalFindings(review: StructuredReview): boolean {
@@ -110,12 +152,10 @@ export function formatFindingsMarkdown(
     md += `### ${label}\n\n`;
     for (const f of findings) {
       const icon = severityIcon(f.severity);
-      const loc = f.file
-        ? f.line
-          ? ` \`${f.file}:${f.line}\``
-          : ` \`${f.file}\``
-        : '';
-      md += `- ${icon} **${f.severity.toUpperCase()}**${loc}: ${f.message}\n`;
+      const loc = f.line
+        ? ` \`${f.file}:${f.line}\``
+        : ` \`${f.file}\``;
+      md += `- ${icon} **${f.severity.toUpperCase()}**${loc} — ${f.message}\n`;
     }
     md += '\n';
   }

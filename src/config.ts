@@ -38,61 +38,113 @@ const DEFAULT_MODELS: Record<string, string> = {
 };
 
 const DEFAULT_GUIDELINES: Record<string, string> = {
-  security: `Review for security vulnerabilities including:
-- SQL injection, XSS, CSRF vulnerabilities
-- Hardcoded secrets, API keys, or credentials
-- Insecure deserialization or input handling
-- Missing authentication/authorization checks
-- Insecure cryptographic practices
-- Path traversal or file inclusion risks
-- Dependency vulnerabilities (known CVEs)
-- Improper error handling that leaks sensitive info`,
+  security: `Flag ONLY concrete, exploitable security issues visible in the changed code.
+You MUST point to the specific line(s) and explain the attack vector.
 
-  tests: `Review test coverage and quality:
-- Are new code paths covered by unit tests?
-- Are edge cases and error scenarios tested?
-- Are integration tests needed for this change?
-- Do tests follow AAA (Arrange-Act-Assert) pattern?
-- Are mocks/stubs used appropriately?
-- Are test descriptions clear and meaningful?
-- Is there test data that could be sensitive?`,
+Flag these when you see actual vulnerable code:
+- User input flows into SQL/NoSQL queries without parameterisation (show the data flow)
+- User input rendered into HTML/templates without escaping (show the sink)
+- Secrets, API keys, passwords, or tokens hardcoded as string literals (quote the value pattern)
+- Missing auth/authz checks on a new route or endpoint (show the unprotected handler)
+- Dangerous deserialization of untrusted input (e.g. eval, pickle.loads, yaml.load without SafeLoader)
+- Cryptographic misuse you can prove (e.g. ECB mode, MD5 for passwords, static IV)
+- Path traversal where user input reaches filesystem APIs without sanitisation
 
-  performance: `Review for performance concerns:
-- N+1 query patterns or excessive DB calls
-- Missing database indexes for new queries
-- Unbounded loops or recursive calls
-- Large memory allocations or memory leaks
-- Missing pagination for list endpoints
-- Synchronous operations that should be async
-- Missing caching opportunities
-- Inefficient algorithms (time/space complexity)`,
+DO NOT flag:
+- Generic "ensure input is validated" without showing the actual unvalidated input
+- Speculative issues ("could potentially leak") without pointing to the leaking code
+- Error messages that include non-sensitive info (stack traces in dev mode, HTTP status codes)
+- Use of environment variables (they are the CORRECT way to handle config)
+- Anything in test files unless real secrets are committed`,
 
-  cost: `Review for cost and infrastructure impact:
-- New cloud resources or services being provisioned
-- API calls to paid third-party services
-- Data transfer costs (cross-region, egress)
-- Storage growth implications
-- Compute-intensive operations that could scale poorly
-- Missing rate limiting or throttling
-- Logging volume that could increase costs
-- Database query patterns that affect billing`,
+  tests: `Flag ONLY specific, concrete gaps in test coverage for the changed code.
+You MUST reference the untested function/branch/line and explain what scenario is missing.
+
+Flag these when the evidence is clear:
+- A new public function/method/endpoint with zero test coverage (name the function)
+- An explicit error/edge-case branch (e.g. catch block, null check, boundary) that has no corresponding test
+- A test that asserts nothing meaningful (e.g. only checks truthiness, or the assertion is tautological)
+- A test that will always pass regardless of implementation (e.g. mocks return the asserted value)
+- Flaky patterns: tests depending on timing, global state, or execution order
+
+DO NOT flag:
+- "Consider adding more tests" without naming the specific untested path
+- Style preferences about test organisation (AAA, describe nesting, test naming)
+- Missing tests for trivial getters/setters/pass-through wrappers
+- That mocks are used (mocks are a standard testing tool; only flag if a mock hides a real bug)
+- Missing integration/e2e tests unless the change is specifically an integration point`,
+
+  performance: `Flag ONLY performance issues where you can point to the problematic code pattern and explain the scaling impact.
+
+Flag these with specific evidence:
+- A database/API call inside a loop where N is unbounded or user-controlled (show the loop + call)
+- An unbounded query (SELECT * without LIMIT on a user-facing endpoint)
+- O(n²) or worse algorithm where n can be large (show the nested iteration and what n represents)
+- Synchronous blocking call (e.g. fs.readFileSync, sleep) in an async request handler
+- Accumulating data in memory without bounds (e.g. pushing to an array in a stream handler)
+- Missing pagination on a list endpoint that could return thousands of rows
+
+DO NOT flag:
+- "Consider caching" without showing what's being redundantly computed/fetched
+- Performance of code that runs once at startup or in a CLI script
+- Micro-optimisations (string concatenation style, forEach vs for-of on small arrays)
+- Missing database indexes (you cannot see the schema or query plan from a diff)
+- Async/await usage in non-hot-path code`,
+
+  cost: `Flag ONLY cost issues where the code change will directly cause measurable spend increase.
+You MUST estimate the magnitude or explain the scaling risk.
+
+Flag these with concrete evidence:
+- New provisioning of cloud resources in IaC (Terraform, CloudFormation, Pulumi) without size limits
+- API calls to paid services (OpenAI, Twilio, Stripe, etc.) in a loop or hot path without rate limiting
+- Writing to storage (S3, GCS, database) proportional to request volume without TTL or cleanup
+- Logging at DEBUG/TRACE level enabled in production config (show the log level setting)
+- Data transfer patterns that cross region/cloud boundaries in the hot path
+
+DO NOT flag:
+- Use of any cloud service in general (that's just how software works)
+- Theoretical "could scale poorly" without showing the scaling dimension
+- Logging at INFO/WARN/ERROR level (these are expected in production)
+- One-time migration scripts or batch jobs
+- Cost of compute that's proportional to legitimate user traffic`,
 };
 
 const JSON_OUTPUT_INSTRUCTION = `
 You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fence. Schema:
 {
-  "summary": "1-3 sentence overall assessment",
+  "summary": "1-3 sentence overall assessment of the PR quality and what it does",
   "findings": [
     {
       "category": "<category_id>",
       "severity": "critical" | "warning" | "suggestion",
+      "confidence": "high" | "medium" | "low",
       "file": "path/to/file.ts",
       "line": 42,
-      "message": "Clear, actionable description"
+      "message": "What is wrong → Why it matters → How to fix it"
     }
   ]
 }
-If no issues for a category, omit findings for that category. Use severity "critical" only for issues that must block merge. Always include "file" and "line" when possible.`;
+
+FINDING QUALITY RULES (mandatory):
+- Every finding MUST reference a specific file and line number from the diff. Findings without location are useless noise.
+- Every message MUST follow the pattern: "[What] → [Why] → [How]". Example: "User input \`req.params.id\` is concatenated into SQL query without parameterisation → allows SQL injection → use parameterised queries: \`db.query('SELECT * FROM users WHERE id = ?', [req.params.id])\`"
+- Set "confidence" to "high" only when you can see the bug/issue directly in the code. Use "medium" when you're inferring from patterns. Use "low" when speculating — but prefer to omit low-confidence findings entirely.
+- If you cannot point to a specific line that is problematic, DO NOT create a finding.
+
+SEVERITY CALIBRATION:
+- "critical": Exploitable vulnerability, data loss, crash in production, broken auth. Would you mass-page the on-call team? If not, it's not critical.
+- "warning": Real issue that should be fixed but won't cause an incident today. Missing error handling that will surface as a bug, resource leak under load, race condition.
+- "suggestion": Genuine improvement opportunity backed by evidence. A specific test case that's missing for a specific branch, a concrete N+1 query.
+
+ANTI-PATTERNS (never do these):
+- ❌ "Ensure X is properly handled" — vague, not actionable, tells the developer nothing new
+- ❌ "Consider adding validation" — where? what input? what validation?
+- ❌ Restating the category guideline as a finding
+- ❌ Flagging patterns that are normal and expected (env vars, try/catch, error logging)
+- ❌ More than 8 findings total — if you have more, keep only the highest-severity ones
+- ❌ Findings on unchanged lines (context lines in the diff that the PR author didn't touch)
+
+If no issues for a category, omit findings for it. An empty findings array is a GOOD outcome — it means the code is solid.`;
 
 function bool(value: string, fallback: boolean): boolean {
   if (value === 'true') return true;
