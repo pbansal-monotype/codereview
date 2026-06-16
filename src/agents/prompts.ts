@@ -22,7 +22,7 @@ const SPECIALIST_ROLES: Record<string, string> = {
   tests:
     'QA architect specializing in test strategy, coverage analysis, and test reliability',
   performance:
-    'performance engineer specializing in scalability, query optimization, and runtime efficiency',
+    'performance engineer reviewing one pull request. our ONLY job is to find performance issues: scalability, query efficiency, runtime cost. Ignore everything else (style, security, correctness-unrelated-to-perf, tests) — other specialists own those.',
   code:
     'senior software engineer specializing in code quality, correctness, error handling, and best practices',
   custom:
@@ -56,11 +56,35 @@ export function buildPrMetadata(
   return prompt;
 }
 
+const TEST_PATH_PATTERNS = [
+  /__tests__\//,
+  /\.(test|spec)\.[^/]+$/,
+  /\/test\//,
+  /\/tests\//,
+  /\/testing\//,
+  /\.stories\.[^/]+$/,
+  /\/fixtures\//,
+  /\/mocks?\//,
+  /\/e2e\//,
+  /\/cypress\//,
+  /\/playwright\//,
+];
+
+function isTestFile(filepath: string): boolean {
+  return TEST_PATH_PATTERNS.some((pattern) => pattern.test(filepath));
+}
+
 export function buildFileContentsSection(
   pr: PullRequestData,
   budget: number,
 ): string {
   if (pr.fileContents.length === 0 || budget <= 500) return '';
+
+  const sortedFiles = [...pr.fileContents].sort((a, b) => {
+    const aIsTest = isTestFile(a.path) ? 1 : 0;
+    const bIsTest = isTestFile(b.path) ? 1 : 0;
+    return aIsTest - bIsTest;
+  });
 
   let section = `\n## Full File Contents\n`;
   section += `IMPORTANT: Read these carefully. They show the complete code surrounding the changes.\n`;
@@ -72,13 +96,13 @@ export function buildFileContentsSection(
 
   let fileCharsUsed = 0;
   let filesIncluded = 0;
-  for (const file of pr.fileContents) {
+  for (const file of sortedFiles) {
     const ext = file.path.slice(file.path.lastIndexOf('.') + 1);
     const block = `### ${file.path}${file.truncated ? ' (truncated)' : ''}\n\`\`\`${ext}\n${file.content}\n\`\`\`\n\n`;
     if (fileCharsUsed + block.length > budget) {
-      const remaining = pr.fileContents.length - filesIncluded;
+      const remaining = sortedFiles.length - filesIncluded;
       core.warning(
-        `Prompt budget exceeded (${MAX_PROMPT_CHARS} chars). Dropped ${remaining} file(s) from context.`,
+        `Prompt budget exceeded (${MAX_PROMPT_CHARS} chars). Dropped ${remaining} file(s) from context (test files deprioritized).`,
       );
       break;
     }

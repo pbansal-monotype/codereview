@@ -214,9 +214,28 @@ export async function getPullRequestData(
   };
 }
 
+const TEST_PATH_PATTERNS = [
+  /__tests__\//,
+  /\.(test|spec)\.[^/]+$/,
+  /\/test\//,
+  /\/tests\//,
+  /\/testing\//,
+  /\.stories\.[^/]+$/,
+  /\/fixtures\//,
+  /\/mocks?\//,
+  /\/e2e\//,
+  /\/cypress\//,
+  /\/playwright\//,
+];
+
+function isTestFile(filepath: string): boolean {
+  return TEST_PATH_PATTERNS.some((pattern) => pattern.test(filepath));
+}
+
 /**
  * Truncate a diff at file boundaries instead of cutting mid-file.
- * Prioritizes source code files over configs/docs.
+ * Prioritizes source code files over tests and configs/docs.
+ * Priority: 2 = source code, 1 = test files, 0 = configs/docs.
  */
 function smartTruncateDiff(diff: string, maxSize: number): string {
   const chunks = diff.split(/(?=^diff --git )/m);
@@ -231,7 +250,11 @@ function smartTruncateDiff(diff: string, maxSize: number): string {
       const fileMatch = chunk.match(/^diff --git a\/.+? b\/(.+)$/m);
       const filename = fileMatch?.[1] ?? '';
       const ext = filename.slice(filename.lastIndexOf('.'));
-      const priority = codeExts.has(ext) ? 1 : 0;
+      const isTest = isTestFile(filename);
+      let priority = 0;
+      if (codeExts.has(ext)) {
+        priority = isTest ? 1 : 2;
+      }
       return { chunk, filename, priority };
     })
     .sort((a, b) => b.priority - a.priority);

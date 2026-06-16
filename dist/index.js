@@ -35803,50 +35803,58 @@ exports.DEFAULT_GUIDELINES = {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.PERFORMANCE_GUIDELINES = void 0;
 exports.PERFORMANCE_GUIDELINES = `
-Review the complete function or request handler being changed. Use file contents to understand the full execution path — where data comes from, how it's processed, and where it goes.
+STEP 0 — ESTABLISH EXECUTION CONTEXT (do this before judging anything)
+- Runtime & concurrency model: Node/single-threaded event loop? JVM/Go thread-or-goroutine-
+  per-request? Serverless? This DETERMINES whether synchronous I/O is a problem. Blocking I/O
+  on a Node request handler blocks all requests; the same call in a thread-per-request model
+  blocks only one thread and is usually fine.
+- Call context: request handler (hot path) vs. startup/migration/CLI/build script (not hot).
+- What is N? For every loop/query, identify what it iterates over and whether N grows with
+  users or data volume, and roughly how large it can realistically get.
+If you cannot establish these, lower your confidence accordingly — do not assert impact you
+can't ground.
 
-WHAT TO LOOK FOR:
+WHAT TO FLAG
+1. N+1 / loop-bound I/O — a DB query, network call, or file read inside a loop body.
+   Include BOTH explicit calls (fetchProfile(id) in a loop) AND implicit ORM lazy-loads
+   (accessing a relation property inside a loop). ORM lazy-loads usually can't be confirmed
+   from the diff alone → flag at confidence:"low".
+2. Unbounded result sets — a query with no LIMIT whose row count grows with user/tenant data.
+   You CANNOT see table sizes. State the data-volume assumption explicitly and condition
+   severity on it. Do NOT assert "will OOM" as fact. A query bounded by a small-cardinality
+   foreign key is fine and should not be flagged.
+3. Algorithmic complexity — O(n²) or worse ONLY when N can realistically reach thousands+
+   AND it is on a hot path. Do not flag O(n²) on inherently small collections (cart lines,
+   form fields, config) — the constant factor is dwarfed by surrounding I/O.
+4. Event-loop blocking — synchronous blocking calls (readFileSync, execSync, sleep,
+   JSON.parse on unbounded input) ONLY in a single-threaded request path (confirmed in Step 0).
+5. Memory accumulation — pushing to an array / building a string in a loop ONLY when you can
+   establish the accumulator outlives request scope (module-level, cache, long-lived stream
+   handler). If the accumulator is request-scoped and gets GC'd, it is NOT a finding.
+6. Missing pagination — new list/search endpoints returning all rows. Check the route def and
+   whether existing pagination helpers/middleware are available and unused.
 
-1. **N+1 Queries / Loop-Bound I/O**
-   - Read the complete function to find loops. Check if any I/O operation (database query, API call, file read) happens inside the loop body.
-   - Check the file context: is the loop iterating over user data? Is N bounded or unbounded?
-   - Example: "for loop at line 20 iterates over \`users\` (unbounded array from DB) and calls \`fetchProfile(user.id)\` on each → N+1 API calls → batch with \`fetchProfiles(userIds)\`"
+SCOPE RULE
+Flag an issue if THIS PR introduces or materially worsens it — even if the expensive operation
+lives in pre-existing/unchanged code that the changed code now calls in a loop or puts on a
+hot path. Do not limit yourself to the + lines.
 
-2. **Unbounded Queries**
-   - New database queries without LIMIT, or list endpoints that return all rows.
-   - Check the full handler: does any upstream code add pagination? If not, flag it.
-   - Example: "db.query('SELECT * FROM orders WHERE user_id = ?') at line 35 has no LIMIT → user with 100K orders will OOM the server → add LIMIT and pagination params"
+DO NOT FLAG
+- Code that runs once: startup, build, migration, seed, admin/CLI scripts.
+- Micro-optimizations: forEach vs for-of, string concat, spread vs assign on small objects.
+- "Consider caching" unless you name exactly what is redundantly fetched and how often.
+- Missing indexes — you cannot see the schema, query plan, or table size.
+- Async/await in non-hot-path code.
 
-3. **Algorithmic Complexity**
-   - Read the complete function to spot nested iterations. What is N? Can it be large?
-   - Only flag O(n²)+ when N is user-controlled or grows with data volume.
-   - Example: "\`items.filter()\` inside \`items.forEach()\` at lines 12-18 → O(n²) where n = cart items → use a Set for O(n) lookup"
-
-4. **Blocking Operations in Async Context**
-   - Check if the function is an async handler (Express route, Lambda handler, etc.) from the file context.
-   - Flag synchronous blocking calls: fs.readFileSync, execSync, sleep, large JSON.parse on unbounded input.
-
-5. **Unbounded Memory Accumulation**
-   - Functions that push to arrays or build strings in loops without size limits.
-   - Especially dangerous in stream handlers or long-running processes.
-   - Check the full function to see if there's any bounds checking.
-
-6. **Missing Pagination**
-   - New list/search endpoints that could return large result sets.
-   - Check the handler's full implementation and the route definition from file context.
-
-HOW TO USE FILE CONTEXT:
-- Check if the function is a request handler (Express, Fastify, Lambda) vs a startup script vs a CLI tool
-- Read the data model/types to understand what N represents and how large it can get
-- Check if there's existing pagination middleware or helpers the author should use
-- Look at how sibling endpoints handle similar patterns (do they paginate? cache? batch?)
-
-DO NOT flag:
-- Code that runs once at startup or in a build/migration script
-- Micro-optimisations (forEach vs for-of, string concat, spread vs Object.assign on small objects)
-- "Consider caching" without showing what's being redundantly fetched and how often
-- Missing database indexes (you cannot see the schema, query plan, or table size from code)
-- Async/await in non-hot-path code (CLI tools, admin scripts, setup functions)
+SEVERITY
+- P0: production-breaking under realistic load (unbounded growth on a hot path reaching
+  thousands+, event-loop blocking on a per-request handler in single-threaded runtime,
+  OOM risk under a clearly-stated and plausible data assumption).
+- P1: significant degradation, not breaking (N+1 with bounded-but-large N, missing pagination
+  on a list endpoint, O(n²) reaching thousands on a warm path).
+Report all P0 and P1. Drop anything below P1 — prefer silence over noise. Zero findings is a
+valid, good result. If you find more than 5 P0/P1, report the top 5 and note in "summary" that
+the PR likely has a systemic performance problem.
 `.trim();
 
 
@@ -36258,7 +36266,7 @@ exports.CATEGORY_LABELS = {
 const SPECIALIST_ROLES = {
     security: 'application security engineer specializing in vulnerability detection, exploitation patterns, and secure coding',
     tests: 'QA architect specializing in test strategy, coverage analysis, and test reliability',
-    performance: 'performance engineer specializing in scalability, query optimization, and runtime efficiency',
+    performance: 'performance engineer reviewing one pull request. our ONLY job is to find performance issues: scalability, query efficiency, runtime cost. Ignore everything else (style, security, correctness-unrelated-to-perf, tests) — other specialists own those.',
     code: 'senior software engineer specializing in code quality, correctness, error handling, and best practices',
     custom: 'senior engineer conducting a focused review based on the provided guidelines',
 };
@@ -36280,9 +36288,30 @@ function buildPrMetadata(pr, config) {
     }
     return prompt;
 }
+const TEST_PATH_PATTERNS = [
+    /__tests__\//,
+    /\.(test|spec)\.[^/]+$/,
+    /\/test\//,
+    /\/tests\//,
+    /\/testing\//,
+    /\.stories\.[^/]+$/,
+    /\/fixtures\//,
+    /\/mocks?\//,
+    /\/e2e\//,
+    /\/cypress\//,
+    /\/playwright\//,
+];
+function isTestFile(filepath) {
+    return TEST_PATH_PATTERNS.some((pattern) => pattern.test(filepath));
+}
 function buildFileContentsSection(pr, budget) {
     if (pr.fileContents.length === 0 || budget <= 500)
         return '';
+    const sortedFiles = [...pr.fileContents].sort((a, b) => {
+        const aIsTest = isTestFile(a.path) ? 1 : 0;
+        const bIsTest = isTestFile(b.path) ? 1 : 0;
+        return aIsTest - bIsTest;
+    });
     let section = `\n## Full File Contents\n`;
     section += `IMPORTANT: Read these carefully. They show the complete code surrounding the changes.\n`;
     section += `Use them to understand:\n`;
@@ -36292,12 +36321,12 @@ function buildFileContentsSection(pr, budget) {
     section += `- Whether the changed code is consistent with the rest of the file\n\n`;
     let fileCharsUsed = 0;
     let filesIncluded = 0;
-    for (const file of pr.fileContents) {
+    for (const file of sortedFiles) {
         const ext = file.path.slice(file.path.lastIndexOf('.') + 1);
         const block = `### ${file.path}${file.truncated ? ' (truncated)' : ''}\n\`\`\`${ext}\n${file.content}\n\`\`\`\n\n`;
         if (fileCharsUsed + block.length > budget) {
-            const remaining = pr.fileContents.length - filesIncluded;
-            core.warning(`Prompt budget exceeded (${config_1.MAX_PROMPT_CHARS} chars). Dropped ${remaining} file(s) from context.`);
+            const remaining = sortedFiles.length - filesIncluded;
+            core.warning(`Prompt budget exceeded (${config_1.MAX_PROMPT_CHARS} chars). Dropped ${remaining} file(s) from context (test files deprioritized).`);
             break;
         }
         section += block;
@@ -37219,9 +37248,26 @@ async function getPullRequestData(token, options) {
         fileContents,
     };
 }
+const TEST_PATH_PATTERNS = [
+    /__tests__\//,
+    /\.(test|spec)\.[^/]+$/,
+    /\/test\//,
+    /\/tests\//,
+    /\/testing\//,
+    /\.stories\.[^/]+$/,
+    /\/fixtures\//,
+    /\/mocks?\//,
+    /\/e2e\//,
+    /\/cypress\//,
+    /\/playwright\//,
+];
+function isTestFile(filepath) {
+    return TEST_PATH_PATTERNS.some((pattern) => pattern.test(filepath));
+}
 /**
  * Truncate a diff at file boundaries instead of cutting mid-file.
- * Prioritizes source code files over configs/docs.
+ * Prioritizes source code files over tests and configs/docs.
+ * Priority: 2 = source code, 1 = test files, 0 = configs/docs.
  */
 function smartTruncateDiff(diff, maxSize) {
     const chunks = diff.split(/(?=^diff --git )/m);
@@ -37235,7 +37281,11 @@ function smartTruncateDiff(diff, maxSize) {
         const fileMatch = chunk.match(/^diff --git a\/.+? b\/(.+)$/m);
         const filename = fileMatch?.[1] ?? '';
         const ext = filename.slice(filename.lastIndexOf('.'));
-        const priority = codeExts.has(ext) ? 1 : 0;
+        const isTest = isTestFile(filename);
+        let priority = 0;
+        if (codeExts.has(ext)) {
+            priority = isTest ? 1 : 2;
+        }
         return { chunk, filename, priority };
     })
         .sort((a, b) => b.priority - a.priority);
