@@ -35706,6 +35706,264 @@ function formatReviewMarkdown(opts) {
 
 /***/ }),
 
+/***/ 6835:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.CODE_GUIDELINES = void 0;
+exports.CODE_GUIDELINES = `
+Review the complete function, class, or module being changed. Use file contents to understand the codebase's existing patterns, conventions, and architecture.
+
+WHAT TO LOOK FOR:
+
+1. **Error Handling Gaps**
+   - Read the complete function: are all failure paths handled? Are there try/catch blocks where needed?
+   - Check if the function can throw but callers don't handle it. Trace through the call chain in the file context.
+   - Check if error messages are meaningful (not swallowed silently, not generic "Something went wrong").
+   - Example: "fetchUser() at line 25 can throw on network failure but the caller at line 42 has no try/catch → unhandled rejection will crash the process → wrap in try/catch and return a proper error response"
+
+2. **API Contract & Input Validation**
+   - New endpoints or public functions: do they validate inputs before processing?
+   - Check the full handler: what happens with missing fields, wrong types, empty strings, negative numbers?
+   - Compare with sibling handlers in the file — do they validate? If so, this one should too.
+   - Example: "POST /users handler at line 30 uses req.body.email directly without validation → missing email will cause db.insert to fail with a cryptic error → validate with schema or check presence first"
+
+3. **Resource Cleanup & Lifecycle**
+   - Database connections, file handles, streams, timers opened but never closed.
+   - Check the complete function: is there a finally block or cleanup path?
+   - Example: "db.connect() at line 15 with no corresponding disconnect in finally → connection leak under error conditions → use try/finally or a connection pool"
+
+4. **Inconsistency with Codebase Patterns**
+   - The changed code uses a different pattern than the rest of the file for the same task.
+   - Check sibling functions: if they use a helper, utility, or middleware, the new code should too.
+   - Example: "Sibling routes use validateRequest() middleware (lines 10, 22, 35) but the new route at line 48 does raw validation inline → inconsistent and error-prone → use validateRequest()"
+
+5. **Race Conditions & Concurrency**
+   - Shared state modified without synchronisation in concurrent contexts.
+   - Check-then-act patterns without atomicity (TOCTOU).
+   - Example: "Read balance at line 20, then write updated balance at line 25 without a transaction → concurrent requests can cause double-spending → wrap in a database transaction"
+
+6. **Null/Undefined Safety**
+   - Accessing properties on values that could be null/undefined without checks.
+   - Optional chaining missing where the type allows undefined.
+   - Check the types and upstream data to understand if null is actually possible.
+
+7. **Logic Errors**
+   - Off-by-one errors in loops or slicing.
+   - Wrong comparison operators (= vs ==, < vs <=).
+   - Inverted conditions or missing negation.
+   - Unreachable code after early returns.
+
+HOW TO USE FILE CONTEXT:
+- Read imports to understand what libraries, utilities, and patterns are available
+- Check how sibling functions handle the same concerns (validation, auth, errors)
+- Trace type definitions to understand what can be null/undefined
+- Look at the module's public API to understand the contract
+- Check if there are shared utilities the author should use instead of reimplementing
+
+DO NOT flag:
+- Style preferences (naming, formatting, bracket placement) — linters handle this
+- "Could be refactored" without a concrete bug or correctness issue
+- Missing TypeScript strict mode features unless they cause a real bug
+- Code that works correctly but could be written "more elegantly"
+- TODOs or commented-out code (those are intentional markers)
+`.trim();
+
+
+/***/ }),
+
+/***/ 5428:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.DEFAULT_GUIDELINES = void 0;
+const security_1 = __nccwpck_require__(1000);
+const tests_1 = __nccwpck_require__(2097);
+const performance_1 = __nccwpck_require__(9762);
+const code_guidelines_1 = __nccwpck_require__(6835);
+exports.DEFAULT_GUIDELINES = {
+    security: security_1.SECURITY_GUIDELINES,
+    tests: tests_1.TESTS_GUIDELINES,
+    performance: performance_1.PERFORMANCE_GUIDELINES,
+    code: code_guidelines_1.CODE_GUIDELINES,
+};
+
+
+/***/ }),
+
+/***/ 9762:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.PERFORMANCE_GUIDELINES = void 0;
+exports.PERFORMANCE_GUIDELINES = `
+Review the complete function or request handler being changed. Use file contents to understand the full execution path — where data comes from, how it's processed, and where it goes.
+
+WHAT TO LOOK FOR:
+
+1. **N+1 Queries / Loop-Bound I/O**
+   - Read the complete function to find loops. Check if any I/O operation (database query, API call, file read) happens inside the loop body.
+   - Check the file context: is the loop iterating over user data? Is N bounded or unbounded?
+   - Example: "for loop at line 20 iterates over \`users\` (unbounded array from DB) and calls \`fetchProfile(user.id)\` on each → N+1 API calls → batch with \`fetchProfiles(userIds)\`"
+
+2. **Unbounded Queries**
+   - New database queries without LIMIT, or list endpoints that return all rows.
+   - Check the full handler: does any upstream code add pagination? If not, flag it.
+   - Example: "db.query('SELECT * FROM orders WHERE user_id = ?') at line 35 has no LIMIT → user with 100K orders will OOM the server → add LIMIT and pagination params"
+
+3. **Algorithmic Complexity**
+   - Read the complete function to spot nested iterations. What is N? Can it be large?
+   - Only flag O(n²)+ when N is user-controlled or grows with data volume.
+   - Example: "\`items.filter()\` inside \`items.forEach()\` at lines 12-18 → O(n²) where n = cart items → use a Set for O(n) lookup"
+
+4. **Blocking Operations in Async Context**
+   - Check if the function is an async handler (Express route, Lambda handler, etc.) from the file context.
+   - Flag synchronous blocking calls: fs.readFileSync, execSync, sleep, large JSON.parse on unbounded input.
+
+5. **Unbounded Memory Accumulation**
+   - Functions that push to arrays or build strings in loops without size limits.
+   - Especially dangerous in stream handlers or long-running processes.
+   - Check the full function to see if there's any bounds checking.
+
+6. **Missing Pagination**
+   - New list/search endpoints that could return large result sets.
+   - Check the handler's full implementation and the route definition from file context.
+
+HOW TO USE FILE CONTEXT:
+- Check if the function is a request handler (Express, Fastify, Lambda) vs a startup script vs a CLI tool
+- Read the data model/types to understand what N represents and how large it can get
+- Check if there's existing pagination middleware or helpers the author should use
+- Look at how sibling endpoints handle similar patterns (do they paginate? cache? batch?)
+
+DO NOT flag:
+- Code that runs once at startup or in a build/migration script
+- Micro-optimisations (forEach vs for-of, string concat, spread vs Object.assign on small objects)
+- "Consider caching" without showing what's being redundantly fetched and how often
+- Missing database indexes (you cannot see the schema, query plan, or table size from code)
+- Async/await in non-hot-path code (CLI tools, admin scripts, setup functions)
+`.trim();
+
+
+/***/ }),
+
+/***/ 1000:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.SECURITY_GUIDELINES = void 0;
+exports.SECURITY_GUIDELINES = `
+Review the complete function, endpoint, or module being changed — not just individual lines.
+Use the full file contents to trace data flow: where does user input enter, how does it travel, and where does it reach a sink?
+
+WHAT TO LOOK FOR:
+
+1. **Injection (SQL, NoSQL, Command, LDAP)**
+   - Trace user input from request params/body/headers through to database queries or shell commands.
+   - Flag when user input reaches a query without parameterisation. Show the full data flow path.
+   - Example: "req.body.name flows into db.query(\`SELECT * FROM users WHERE name = '\${name}'\`) at line 42 → SQL injection → use db.query('SELECT * FROM users WHERE name = ?', [name])"
+
+2. **Cross-Site Scripting (XSS)**
+   - Check if user input reaches HTML output, template rendering, or dangerouslySetInnerHTML without escaping.
+   - Review the complete render function to see if any branch outputs unescaped input.
+
+3. **Hardcoded Secrets**
+   - Look for string literals that match patterns: API keys, passwords, tokens, connection strings.
+   - Quote the pattern you found (first few chars + last few) as proof. Don't flag env var usage.
+
+4. **Authentication & Authorization Gaps**
+   - When a new route/endpoint is added, check the file context to see if sibling routes use auth middleware.
+   - If the new route LACKS auth that sibling routes HAVE, flag it. Show both the protected and unprotected routes.
+
+5. **Dangerous Deserialization**
+   - eval(), Function(), pickle.loads(), yaml.load() without SafeLoader, JSON.parse on unchecked input used in security-sensitive contexts.
+
+6. **Cryptographic Misuse**
+   - ECB mode, MD5/SHA1 for password hashing, hardcoded IVs, Math.random() for security tokens.
+   - Only flag when you can see the actual misuse in the code.
+
+7. **Path Traversal**
+   - User input reaching fs.readFile, fs.writeFile, path.join without sanitisation.
+   - Check if the function validates/sanitises the path before use.
+
+HOW TO USE FILE CONTEXT:
+- Read the imports to understand what frameworks/libraries are used (Express? Django? Spring?)
+- Check if auth middleware is applied at router level vs route level
+- Trace type definitions to understand what data flows where
+- Look at error handlers to see if they expose internal state
+
+DO NOT flag:
+- Environment variables (correct pattern)
+- Error messages with HTTP status codes or non-sensitive operational info
+- Dependencies without evidence of a known CVE in the changed code
+- Anything in test files unless actual secrets are committed
+- Generic "input validation" without showing the specific unvalidated input path
+`.trim();
+
+
+/***/ }),
+
+/***/ 2097:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.TESTS_GUIDELINES = void 0;
+exports.TESTS_GUIDELINES = `
+Review the complete function or class being changed, then check if its behaviour is adequately tested.
+Use file contents to understand what the function DOES before evaluating test coverage.
+
+WHAT TO LOOK FOR:
+
+1. **New Functions/Methods Without Tests**
+   - If a new public function, API handler, or exported method is added, check if any test file covers it.
+   - Use the file context to see what the function does. Name the function and describe what test is missing.
+   - Example: "New function \`calculateDiscount()\` at line 15 handles 3 branches (percentage, fixed, BOGO) → only the percentage case is tested → add tests for fixed and BOGO discount types"
+
+2. **Untested Error/Edge-Case Branches**
+   - Read the complete function to identify all branches: if/else, switch cases, try/catch, null checks, empty arrays, boundary values.
+   - For each branch, check if the corresponding test file has a test that exercises it.
+   - Flag specific untested branches: "The catch block at line 28 returns a 500 error with message → no test covers the error path → add a test that triggers the error condition"
+
+3. **Tautological or Meaningless Tests**
+   - A test that asserts what the mock returns (proves nothing about the implementation)
+   - A test with no assertions or only \`expect(result).toBeTruthy()\` on a function that always returns something
+   - A test that catches an error and asserts nothing about it
+
+4. **Flaky Test Patterns**
+   - Timing-dependent assertions (setTimeout, Date.now() comparisons)
+   - Tests that depend on execution order or shared mutable state
+   - Tests that hit real network/filesystem without mocking
+
+5. **Missing Negative Tests**
+   - When a function validates input, check if tests cover invalid input scenarios
+   - When a function has error handling, check if tests trigger those error paths
+
+HOW TO USE FILE CONTEXT:
+- Read the full function being tested to understand ALL its branches and behaviour
+- Check imports to understand the testing framework (Jest, Mocha, Vitest, etc.)
+- Look at sibling tests to understand the testing patterns used in this codebase
+- Check if there's a test file for the changed source file (same name with .test/.spec)
+
+DO NOT flag:
+- Generic "add more tests" without naming the specific function and untested scenario
+- Test style preferences (naming conventions, describe nesting, AAA pattern)
+- Missing tests for trivial pass-through functions, getters, setters, or type re-exports
+- That mocks are used (they're standard; only flag if a mock makes a test meaningless)
+- Missing integration/e2e tests unless the change is specifically a system integration point
+`.trim();
+
+
+/***/ }),
+
 /***/ 6758:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
@@ -35976,14 +36234,14 @@ exports.CATEGORY_LABELS = {
     security: 'Security',
     tests: 'Test Coverage',
     performance: 'Performance',
-    cost: 'Cost & Infrastructure',
+    code: 'Code Guidelines',
     custom: 'Custom Review',
 };
 const SPECIALIST_ROLES = {
     security: 'application security engineer specializing in vulnerability detection, exploitation patterns, and secure coding',
     tests: 'QA architect specializing in test strategy, coverage analysis, and test reliability',
     performance: 'performance engineer specializing in scalability, query optimization, and runtime efficiency',
-    cost: 'cloud infrastructure economist specializing in cost optimization and billing impact analysis',
+    code: 'senior software engineer specializing in code quality, correctness, error handling, and best practices',
     custom: 'senior engineer conducting a focused review based on the provided guidelines',
 };
 // ─── Shared prompt helpers ─────────────────────────────────────────
@@ -36007,8 +36265,13 @@ function buildPrMetadata(pr, config) {
 function buildFileContentsSection(pr, budget) {
     if (pr.fileContents.length === 0 || budget <= 500)
         return '';
-    let section = `\n## File Contents (full context)\n`;
-    section += `Use these to understand the complete code structure, imports, types, and surrounding logic.\n\n`;
+    let section = `\n## Full File Contents\n`;
+    section += `IMPORTANT: Read these carefully. They show the complete code surrounding the changes.\n`;
+    section += `Use them to understand:\n`;
+    section += `- The full function/class/module the change lives in\n`;
+    section += `- What patterns sibling functions use (auth, error handling, validation)\n`;
+    section += `- How data flows through imports, types, and helper functions\n`;
+    section += `- Whether the changed code is consistent with the rest of the file\n\n`;
     let fileCharsUsed = 0;
     let filesIncluded = 0;
     for (const file of pr.fileContents) {
@@ -36030,17 +36293,28 @@ function buildSpecialistSystemPrompt(categoryId, guidelines, config) {
     const role = SPECIALIST_ROLES[categoryId] || SPECIALIST_ROLES.custom;
     const label = exports.CATEGORY_LABELS[categoryId] || categoryId;
     let prompt = `You are a ${role}.
-You are reviewing a pull request diff. Your ONLY job is to find **${label}** issues.
+You are reviewing a pull request. Your ONLY job is to find **${label}** issues.
 Do NOT look for anything outside your specialty. Other specialists handle other categories.
 
-RULES:
-1. ONLY flag issues you can prove by pointing to specific changed lines (+ lines) in the diff.
-2. Every finding must be specific: what exact code is wrong, what breaks in production, how to fix it.
-3. Prefer silence over noise. Zero findings is a perfectly valid result — it means the code is solid in your area.
-4. Use the file contents for context ONLY. Don't flag issues in unchanged code.
-5. Max 4 findings. If you found more, keep only the most critical.
+HOW TO REVIEW:
+1. Read the DIFF to see what changed (lines with + are added, - are removed).
+2. Read the FULL FILE CONTENTS to understand the complete context:
+   - What does the full function/class/handler do?
+   - How does data flow through the code?
+   - What patterns do sibling functions use? (Does the changed code match them?)
+   - What error handling, validation, or auth exists around the changed code?
+3. Review the changed code AS PART OF its complete function/API — not as isolated lines.
+   - If a new function is added, review the ENTIRE function: inputs, logic, error handling, output.
+   - If an existing function is modified, understand what the function does end-to-end and whether the change is correct in that context.
+   - If a new API endpoint is added, check the complete handler: auth, validation, business logic, error handling, response.
+4. Your findings should be about the changed code, but USE the surrounding context to judge correctness.
 
-YOUR DOMAIN GUIDELINES:
+QUALITY RULES:
+- Every finding must point to a specific file and line.
+- Every finding must explain: what's wrong → why it matters in production → how to fix it.
+- Prefer silence over noise. Zero findings is a valid and good result.
+- Max 4 findings. Keep only the most critical.
+
 ${guidelines}
 
 ${(0, config_1.getSpecialistJsonInstruction)()}`;
@@ -36052,7 +36326,14 @@ ${(0, config_1.getSpecialistJsonInstruction)()}`;
 function buildSpecialistUserPrompt(pr, config) {
     let prompt = buildPrMetadata(pr, config);
     const diffSection = `\n## Diff (what changed)\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
-    const tailInstruction = `\nReview the diff above. Focus ONLY on your specialty area. Return JSON.`;
+    const tailInstruction = `\nNow review the changes above in your specialty area.
+
+Step 1: For each changed function/class/handler, read its FULL implementation from the file contents.
+Step 2: Understand what it does end-to-end — inputs, processing, outputs, error paths.
+Step 3: Evaluate the changed code in that context. Does it introduce a real issue?
+Step 4: Only create findings for genuine problems you can prove with specific code references.
+
+Return JSON.`;
     const budgetForFiles = config_1.MAX_PROMPT_CHARS -
         prompt.length -
         diffSection.length -
@@ -36068,18 +36349,22 @@ function buildJudgeSystemPrompt(config) {
 Specialist reviewers (security, performance, tests, cost) have already examined the code and produced findings.
 Your job is NOT to re-review the code from scratch. Instead, you must:
 
-1. VERIFY each finding against the diff — does the finding reference real code that actually exists in the changed lines? If the line number or code snippet doesn't match the diff, REJECT the finding.
+1. VERIFY each finding against the diff and file context:
+   - Does the finding reference real code that actually exists?
+   - Is the line number correct?
+   - Does the described issue actually exist when you read the surrounding code?
+   - Could the issue already be handled elsewhere in the function/file?
 2. DEDUPLICATE — if multiple specialists flagged the same underlying issue, keep the best-written one.
-3. RE-CALIBRATE severity — is "critical" really critical? Would you page the on-call team? Downgrade if not.
+3. RE-CALIBRATE severity — is "critical" really critical? Would you page the on-call team at 3am? Downgrade if not.
 4. FILTER noise — remove findings that are:
-   - Vague ("ensure X", "consider Y") without specific code references
-   - About unchanged code (context lines, not + lines)
+   - Vague ("ensure X", "consider Y") without specific code and fix
+   - About patterns that are actually correct when you read the full context
    - Obvious or unhelpful (things any developer would already know)
-   - Speculative without evidence in the diff
-5. SUMMARIZE — write a 1-3 sentence summary of the PR quality and what it does.
+   - Already handled by existing code the specialist missed
+5. SUMMARIZE — write a 1-3 sentence summary of what this PR does and its overall quality.
 
-You are the developer's ally, not their adversary. Only surface findings that will genuinely help.
-An empty findings array means the specialists found nothing noteworthy — that's a GOOD outcome.
+You are the developer's ally. Only surface findings that will genuinely help them ship better code.
+An empty findings array means the code is solid — that's a GOOD outcome.
 
 ${(0, config_1.getJudgeJsonInstruction)()}`;
     if (config.extraInstructions) {
@@ -36094,7 +36379,7 @@ function buildJudgeUserPrompt(specialistResults, pr) {
         prompt += `\n### PR Description\n${pr.body}\n`;
     }
     prompt += `\n## Raw Findings from Specialist Reviewers\n`;
-    prompt += `Verify each finding against the diff below. Keep only findings that are real, specific, and actionable.\n\n`;
+    prompt += `Verify each finding against the diff below. Cross-check with the full context — is the issue real, or did the specialist miss surrounding code that already handles it?\n\n`;
     let totalFindings = 0;
     for (const result of specialistResults) {
         const label = exports.CATEGORY_LABELS[result.categoryId] || result.categoryId;
@@ -36265,77 +36550,10 @@ exports.getJudgeJsonInstruction = getJudgeJsonInstruction;
 exports.loadConfig = loadConfig;
 const core = __importStar(__nccwpck_require__(7484));
 const ignore_1 = __nccwpck_require__(7237);
+const guidelines_1 = __nccwpck_require__(5428);
 const DEFAULT_MODELS = {
     anthropic: 'claude-sonnet-4-20250514',
     openai: 'gpt-4o',
-};
-const DEFAULT_GUIDELINES = {
-    security: `Flag ONLY concrete, exploitable security issues visible in the changed code.
-You MUST point to the specific line(s) and explain the attack vector.
-
-Flag these when you see actual vulnerable code:
-- User input flows into SQL/NoSQL queries without parameterisation (show the data flow)
-- User input rendered into HTML/templates without escaping (show the sink)
-- Secrets, API keys, passwords, or tokens hardcoded as string literals (quote the value pattern)
-- Missing auth/authz checks on a new route or endpoint (show the unprotected handler)
-- Dangerous deserialization of untrusted input (e.g. eval, pickle.loads, yaml.load without SafeLoader)
-- Cryptographic misuse you can prove (e.g. ECB mode, MD5 for passwords, static IV)
-- Path traversal where user input reaches filesystem APIs without sanitisation
-
-DO NOT flag:
-- Generic "ensure input is validated" without showing the actual unvalidated input
-- Speculative issues ("could potentially leak") without pointing to the leaking code
-- Error messages that include non-sensitive info (stack traces in dev mode, HTTP status codes)
-- Use of environment variables (they are the CORRECT way to handle config)
-- Anything in test files unless real secrets are committed`,
-    tests: `Flag ONLY specific, concrete gaps in test coverage for the changed code.
-You MUST reference the untested function/branch/line and explain what scenario is missing.
-
-Flag these when the evidence is clear:
-- A new public function/method/endpoint with zero test coverage (name the function)
-- An explicit error/edge-case branch (e.g. catch block, null check, boundary) that has no corresponding test
-- A test that asserts nothing meaningful (e.g. only checks truthiness, or the assertion is tautological)
-- A test that will always pass regardless of implementation (e.g. mocks return the asserted value)
-- Flaky patterns: tests depending on timing, global state, or execution order
-
-DO NOT flag:
-- "Consider adding more tests" without naming the specific untested path
-- Style preferences about test organisation (AAA, describe nesting, test naming)
-- Missing tests for trivial getters/setters/pass-through wrappers
-- That mocks are used (mocks are a standard testing tool; only flag if a mock hides a real bug)
-- Missing integration/e2e tests unless the change is specifically an integration point`,
-    performance: `Flag ONLY performance issues where you can point to the problematic code pattern and explain the scaling impact.
-
-Flag these with specific evidence:
-- A database/API call inside a loop where N is unbounded or user-controlled (show the loop + call)
-- An unbounded query (SELECT * without LIMIT on a user-facing endpoint)
-- O(n²) or worse algorithm where n can be large (show the nested iteration and what n represents)
-- Synchronous blocking call (e.g. fs.readFileSync, sleep) in an async request handler
-- Accumulating data in memory without bounds (e.g. pushing to an array in a stream handler)
-- Missing pagination on a list endpoint that could return thousands of rows
-
-DO NOT flag:
-- "Consider caching" without showing what's being redundantly computed/fetched
-- Performance of code that runs once at startup or in a CLI script
-- Micro-optimisations (string concatenation style, forEach vs for-of on small arrays)
-- Missing database indexes (you cannot see the schema or query plan from a diff)
-- Async/await usage in non-hot-path code`,
-    cost: `Flag ONLY cost issues where the code change will directly cause measurable spend increase.
-You MUST estimate the magnitude or explain the scaling risk.
-
-Flag these with concrete evidence:
-- New provisioning of cloud resources in IaC (Terraform, CloudFormation, Pulumi) without size limits
-- API calls to paid services (OpenAI, Twilio, Stripe, etc.) in a loop or hot path without rate limiting
-- Writing to storage (S3, GCS, database) proportional to request volume without TTL or cleanup
-- Logging at DEBUG/TRACE level enabled in production config (show the log level setting)
-- Data transfer patterns that cross region/cloud boundaries in the hot path
-
-DO NOT flag:
-- Use of any cloud service in general (that's just how software works)
-- Theoretical "could scale poorly" without showing the scaling dimension
-- Logging at INFO/WARN/ERROR level (these are expected in production)
-- One-time migration scripts or batch jobs
-- Cost of compute that's proportional to legitimate user traffic`,
 };
 // ─── JSON output instructions ──────────────────────────────────────
 const SPECIALIST_JSON_INSTRUCTION = `
@@ -36353,14 +36571,14 @@ You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fen
 }
 
 RULES:
-- Every finding MUST have a file and line number. If you can't point to a specific line, don't create the finding.
+- Every finding MUST have a file and line number from the changed code.
 - Message format: "[What] → [Why] → [How]" — all three parts required.
-- "confidence": "high" = you can see the bug. "medium" = inferring from patterns. "low" = speculating (prefer to omit).
-- Severity: "critical" = would you wake the on-call? "warning" = real bug but not urgent. "suggestion" = concrete improvement.
+- "confidence": "high" = you can prove the issue from the code. "medium" = strong inference from patterns and context. "low" = speculating (omit these).
+- Severity: "critical" = would you wake the on-call at 3am? "warning" = real bug but not urgent. "suggestion" = concrete improvement with specific code.
 - An empty findings array is a GOOD response. Don't manufacture issues.
 - Max 4 findings. Keep only the most important ones.
 - ❌ Never: "Ensure...", "Consider...", "Make sure...", "Verify that..." — these are not findings.
-- ❌ Never flag unchanged lines, env vars, standard try/catch, or normal error logging.`;
+- ❌ Never flag env vars, standard try/catch, or normal error logging.`;
 function getSpecialistJsonInstruction() {
     return SPECIALIST_JSON_INSTRUCTION;
 }
@@ -36401,7 +36619,7 @@ const ENV_VAR_NAMES = {
     security: 'SECURITY_GUIDELINES',
     tests: 'TEST_GUIDELINES',
     performance: 'PERFORMANCE_GUIDELINES',
-    cost: 'COST_GUIDELINES',
+    code: 'CODE_GUIDELINES',
     max_diff_size: 'MAX_DIFF_SIZE',
     post_review_comment: 'POST_REVIEW_COMMENT',
     post_inline_comments: 'POST_INLINE_COMMENTS',
@@ -36437,7 +36655,7 @@ function loadConfig() {
         throw new Error(`Invalid provider "${provider}". Use "anthropic" or "openai".`);
     }
     const model = resolve('model') || DEFAULT_MODELS[provider];
-    const enabledCategories = resolve('review_categories', 'security,tests,performance,cost')
+    const enabledCategories = resolve('review_categories', 'security,tests,performance,code')
         .split(',')
         .map((c) => c.trim().toLowerCase())
         .filter(Boolean);
@@ -36446,7 +36664,7 @@ function loadConfig() {
         const fromEnv = process.env[ENV_VAR_NAMES[category]];
         return {
             enabled: enabledCategories.includes(category),
-            guidelines: actionInput || fromEnv || DEFAULT_GUIDELINES[category] || '',
+            guidelines: actionInput || fromEnv || guidelines_1.DEFAULT_GUIDELINES[category] || '',
         };
     }
     const apiKey = resolveApiKey(provider);
@@ -36464,7 +36682,7 @@ function loadConfig() {
             security: resolveGuidelines('security'),
             tests: resolveGuidelines('tests'),
             performance: resolveGuidelines('performance'),
-            cost: resolveGuidelines('cost'),
+            code: resolveGuidelines('code'),
             custom: {
                 enabled: enabledCategories.includes('custom'),
                 guidelines: resolve('custom_prompt'),
@@ -37107,6 +37325,20 @@ async function upsertComment(octokit, owner, repo, prNumber, marker, body) {
     }
 }
 // ─── Inline review comments ────────────────────────────────────────
+function findNearestValidLine(targetLine, validLines) {
+    if (validLines.size === 0)
+        return undefined;
+    let nearest;
+    let minDist = Infinity;
+    for (const line of validLines) {
+        const dist = Math.abs(line - targetLine);
+        if (dist < minDist) {
+            minDist = dist;
+            nearest = line;
+        }
+    }
+    return nearest;
+}
 async function postInlineReview(token, prNumber, diff, findings) {
     const findingsWithLocation = findings.filter((f) => f.file && f.line);
     if (findingsWithLocation.length === 0) {
@@ -37117,20 +37349,31 @@ async function postInlineReview(token, prNumber, diff, findings) {
     let skipped = 0;
     for (const finding of findingsWithLocation) {
         const fileTargets = validTargets.get(finding.file);
-        if (!fileTargets || !fileTargets.has(finding.line)) {
+        if (!fileTargets || fileTargets.size === 0) {
             skipped++;
             continue;
+        }
+        let line = finding.line;
+        let relocated = false;
+        if (!fileTargets.has(line)) {
+            const nearest = findNearestValidLine(line, fileTargets);
+            if (!nearest) {
+                skipped++;
+                continue;
+            }
+            line = nearest;
+            relocated = true;
         }
         const icon = finding.severity === 'critical'
             ? '🔴'
             : finding.severity === 'warning'
                 ? '🟡'
                 : '🔵';
-        comments.push({
-            path: finding.file,
-            line: finding.line,
-            body: `${icon} **${finding.severity.toUpperCase()}** — ${finding.message}`,
-        });
+        let body = `${icon} **${finding.severity.toUpperCase()}** — ${finding.message}`;
+        if (relocated) {
+            body = `📍 *Refers to line ${finding.line}*\n\n${body}`;
+        }
+        comments.push({ path: finding.file, line, body });
     }
     if (comments.length === 0) {
         return { posted: 0, skipped };

@@ -11,7 +11,7 @@ export interface ReviewConfig {
         security: CategoryGuidelines;
         tests: CategoryGuidelines;
         performance: CategoryGuidelines;
-        cost: CategoryGuidelines;
+        code: CategoryGuidelines;
         custom: CategoryGuidelines;
     };
     customPrompt: string;
