@@ -27,8 +27,9 @@ export interface ReviewConfig {
     contextFiles: string[];
     maxFileSize: number;
 }
+export declare function getSpecialistJsonInstruction(): string;
+export declare function getJudgeJsonInstruction(): string;
 export declare function loadConfig(): ReviewConfig;
-export declare function getJsonOutputInstruction(): string;
 /**
  * Safe cross-model default for maximum combined prompt size (chars).
  * ~300K chars ≈ ~75K tokens, well within both Claude (200K) and GPT-4o (128K) limits.

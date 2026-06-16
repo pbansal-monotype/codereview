@@ -35638,6 +35638,588 @@ function wrappy (fn, cb) {
 
 /***/ }),
 
+/***/ 6575:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.formatReviewMarkdown = formatReviewMarkdown;
+const findings_1 = __nccwpck_require__(1001);
+const cost_1 = __nccwpck_require__(8666);
+const prompts_1 = __nccwpck_require__(2413);
+function formatReviewMarkdown(opts) {
+    const { structured, pr, config, categories, totalTokens, apiCalls } = opts;
+    let md = `# 🤖 AI PR Review\n\n`;
+    md += `**PR:** #${pr.number} — ${pr.title}\n`;
+    md += `**Provider:** ${config.provider} (${config.model})\n`;
+    md += `**Mode:** Multi-agent (${apiCalls - 1} specialists + judge)\n`;
+    md += `**Files reviewed:** ${pr.reviewedFiles.length} / ${pr.changedFiles.length} changed\n`;
+    if (pr.redactionCount > 0) {
+        md += `**Secrets redacted:** ${pr.redactionCount} value(s) removed before AI review\n`;
+    }
+    if (structured) {
+        const criticalCount = structured.findings.filter((f) => f.severity === 'critical').length;
+        if (criticalCount > 0) {
+            md += `\n> 🚨 **${criticalCount} critical issue(s) found — merge blocked**\n`;
+        }
+        else if (structured.findings.length > 0) {
+            md += `\n> ✅ **No critical issues — ${structured.findings.length} suggestion(s)/warning(s)**\n`;
+        }
+        else {
+            md += `\n> ✅ **All clear — no issues found**\n`;
+        }
+    }
+    md += `\n---\n\n`;
+    if (structured && structured.findings.length > 0) {
+        const critical = structured.findings.filter((f) => f.severity === 'critical').length;
+        const warning = structured.findings.filter((f) => f.severity === 'warning').length;
+        const suggestion = structured.findings.filter((f) => f.severity === 'suggestion').length;
+        md += `**Findings:** 🔴 ${critical} critical · 🟡 ${warning} warning · 🔵 ${suggestion} suggestion\n\n`;
+        md += (0, findings_1.formatFindingsMarkdown)(structured, prompts_1.CATEGORY_LABELS);
+    }
+    else if (structured) {
+        md += structured.summary || 'No issues found.\n';
+    }
+    md += `\n---\n\n`;
+    md += `<details>\n<summary>📊 Review Stats</summary>\n\n`;
+    md += `- Categories: ${categories.map((id) => prompts_1.CATEGORY_LABELS[id] || id).join(', ')}\n`;
+    md += `- API calls: ${apiCalls} (${apiCalls - 1} specialist + 1 judge)\n`;
+    md += `- Tokens: ${totalTokens.input.toLocaleString()} input + ${totalTokens.output.toLocaleString()} output = ${(totalTokens.input + totalTokens.output).toLocaleString()} total\n`;
+    const cost = (0, cost_1.estimateCost)(config.model, totalTokens.input, totalTokens.output);
+    if (cost) {
+        md += `- Estimated cost: ${cost}\n`;
+    }
+    md += `\n**Specialist breakdown:**\n`;
+    for (const r of opts.specialistResults) {
+        const label = prompts_1.CATEGORY_LABELS[r.categoryId] || r.categoryId;
+        const status = r.failed
+            ? '❌ failed'
+            : `${r.findings.length} raw finding(s)`;
+        md += `- ${label}: ${status} (${(r.tokens.input + r.tokens.output).toLocaleString()} tokens)\n`;
+    }
+    md += `- Provider: ${config.provider} / ${config.model}\n`;
+    md += `</details>\n`;
+    return md;
+}
+
+
+/***/ }),
+
+/***/ 6758:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.runReview = void 0;
+var orchestrator_1 = __nccwpck_require__(7932);
+Object.defineProperty(exports, "runReview", ({ enumerable: true, get: function () { return orchestrator_1.runReview; } }));
+
+
+/***/ }),
+
+/***/ 945:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.runJudge = runJudge;
+const core = __importStar(__nccwpck_require__(7484));
+const findings_1 = __nccwpck_require__(1001);
+const prompts_1 = __nccwpck_require__(2413);
+async function runJudge(provider, specialistResults, pr, config) {
+    core.info('[judge] Starting quality gate review...');
+    const systemPrompt = (0, prompts_1.buildJudgeSystemPrompt)(config);
+    const userPrompt = (0, prompts_1.buildJudgeUserPrompt)(specialistResults, pr);
+    const response = await provider.review({
+        systemPrompt,
+        userPrompt,
+        timeoutMs: config.timeoutMs,
+    });
+    let structured;
+    try {
+        structured = response.structured ?? (0, findings_1.parseStructuredReview)(response.review);
+    }
+    catch {
+        core.warning('[judge] Failed to parse judge output — using raw specialist findings');
+        const allFindings = specialistResults.flatMap((r) => r.findings);
+        structured = {
+            summary: 'Judge review could not parse output. Showing unfiltered specialist findings.',
+            findings: allFindings,
+        };
+    }
+    core.info(`[judge] Approved ${structured.findings.length} finding(s) (${response.tokensUsed} tokens)`);
+    return {
+        structured,
+        tokens: { input: response.inputTokens, output: response.outputTokens },
+    };
+}
+
+
+/***/ }),
+
+/***/ 7932:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.runReview = runReview;
+const core = __importStar(__nccwpck_require__(7484));
+const findings_1 = __nccwpck_require__(1001);
+const prompts_1 = __nccwpck_require__(2413);
+const specialist_1 = __nccwpck_require__(3121);
+const judge_1 = __nccwpck_require__(945);
+const format_1 = __nccwpck_require__(6575);
+async function runReview(provider, config, pr) {
+    const activeCategories = [];
+    for (const [id, guidelines] of Object.entries(config.categories)) {
+        if (!guidelines.enabled)
+            continue;
+        if (!guidelines.guidelines && id !== 'custom')
+            continue;
+        if (id === 'custom' && !guidelines.guidelines)
+            continue;
+        activeCategories.push({ id, guidelines });
+    }
+    if (activeCategories.length === 0) {
+        core.warning('No review categories enabled.');
+        return {
+            markdown: '# 🤖 AI PR Review\n\nNo review categories were enabled.\n',
+            hasCritical: false,
+            categories: [],
+            tokensUsed: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+        };
+    }
+    if (pr.reviewedFiles.length === 0 && pr.diff.trim().length === 0) {
+        return {
+            markdown: '# 🤖 AI PR Review\n\nNo reviewable files in this PR (all changed files matched ignore patterns).\n',
+            hasCritical: false,
+            categories: activeCategories.map((c) => c.id),
+            tokensUsed: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+        };
+    }
+    const categoryIds = activeCategories.map((c) => c.id);
+    core.info(`Fan-out to ${activeCategories.length} specialists: ${categoryIds.map((id) => prompts_1.CATEGORY_LABELS[id] || id).join(', ')}`);
+    // Stage 1: Fan out to all specialist agents in parallel
+    const specialistResults = await Promise.all(activeCategories.map((cat) => (0, specialist_1.runSpecialistAgent)(provider, cat.id, cat.guidelines, pr, config)));
+    const totalSpecialistFindings = specialistResults.reduce((sum, r) => sum + r.findings.length, 0);
+    const failedCount = specialistResults.filter((r) => r.failed).length;
+    core.info(`Specialists complete: ${totalSpecialistFindings} raw finding(s), ${failedCount} failed agent(s)`);
+    // Stage 2: Run judge agent to verify, deduplicate, and rate findings
+    let judgeTokens = { input: 0, output: 0 };
+    let structured;
+    try {
+        const judgeResult = await (0, judge_1.runJudge)(provider, specialistResults, pr, config);
+        structured = judgeResult.structured;
+        judgeTokens = judgeResult.tokens;
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        core.warning(`[judge] Judge failed: ${message} — falling back to raw specialist findings`);
+        const allFindings = specialistResults.flatMap((r) => r.findings);
+        structured = {
+            summary: 'Judge unavailable. Showing unfiltered specialist findings.',
+            findings: allFindings,
+        };
+    }
+    const hasCritical = (0, findings_1.hasCriticalFindings)(structured);
+    const totalInput = specialistResults.reduce((sum, r) => sum + r.tokens.input, 0) +
+        judgeTokens.input;
+    const totalOutput = specialistResults.reduce((sum, r) => sum + r.tokens.output, 0) +
+        judgeTokens.output;
+    const apiCalls = activeCategories.length + 1;
+    const markdown = (0, format_1.formatReviewMarkdown)({
+        structured,
+        pr,
+        config,
+        categories: categoryIds,
+        totalTokens: { input: totalInput, output: totalOutput },
+        apiCalls,
+        specialistResults,
+    });
+    return {
+        markdown,
+        hasCritical,
+        categories: categoryIds,
+        structured,
+        tokensUsed: totalInput + totalOutput,
+        inputTokens: totalInput,
+        outputTokens: totalOutput,
+    };
+}
+
+
+/***/ }),
+
+/***/ 2413:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.CATEGORY_LABELS = void 0;
+exports.buildPrMetadata = buildPrMetadata;
+exports.buildFileContentsSection = buildFileContentsSection;
+exports.buildSpecialistSystemPrompt = buildSpecialistSystemPrompt;
+exports.buildSpecialistUserPrompt = buildSpecialistUserPrompt;
+exports.buildJudgeSystemPrompt = buildJudgeSystemPrompt;
+exports.buildJudgeUserPrompt = buildJudgeUserPrompt;
+const core = __importStar(__nccwpck_require__(7484));
+const config_1 = __nccwpck_require__(2973);
+exports.CATEGORY_LABELS = {
+    security: 'Security',
+    tests: 'Test Coverage',
+    performance: 'Performance',
+    cost: 'Cost & Infrastructure',
+    custom: 'Custom Review',
+};
+const SPECIALIST_ROLES = {
+    security: 'application security engineer specializing in vulnerability detection, exploitation patterns, and secure coding',
+    tests: 'QA architect specializing in test strategy, coverage analysis, and test reliability',
+    performance: 'performance engineer specializing in scalability, query optimization, and runtime efficiency',
+    cost: 'cloud infrastructure economist specializing in cost optimization and billing impact analysis',
+    custom: 'senior engineer conducting a focused review based on the provided guidelines',
+};
+// ─── Shared prompt helpers ─────────────────────────────────────────
+function buildPrMetadata(pr, config) {
+    let prompt = `## Pull Request\n`;
+    prompt += `- **Title:** ${pr.title}\n`;
+    prompt += `- **Author:** ${pr.author}\n`;
+    prompt += `- **Branch:** ${pr.headBranch} → ${pr.baseBranch}\n`;
+    prompt += `- **Files reviewed:** ${pr.reviewedFiles.length} (${pr.reviewedFiles.join(', ') || 'none'})\n`;
+    if (pr.ignoredFiles.length > 0) {
+        prompt += `- **Files skipped (ignored):** ${pr.ignoredFiles.join(', ')}\n`;
+    }
+    if (pr.body) {
+        prompt += `\n### PR Description\n${pr.body}\n`;
+    }
+    if (config.customPrompt) {
+        prompt += `\n### Additional Context\n${config.customPrompt}\n`;
+    }
+    return prompt;
+}
+function buildFileContentsSection(pr, budget) {
+    if (pr.fileContents.length === 0 || budget <= 500)
+        return '';
+    let section = `\n## File Contents (full context)\n`;
+    section += `Use these to understand the complete code structure, imports, types, and surrounding logic.\n\n`;
+    let fileCharsUsed = 0;
+    let filesIncluded = 0;
+    for (const file of pr.fileContents) {
+        const ext = file.path.slice(file.path.lastIndexOf('.') + 1);
+        const block = `### ${file.path}${file.truncated ? ' (truncated)' : ''}\n\`\`\`${ext}\n${file.content}\n\`\`\`\n\n`;
+        if (fileCharsUsed + block.length > budget) {
+            const remaining = pr.fileContents.length - filesIncluded;
+            core.warning(`Prompt budget exceeded (${config_1.MAX_PROMPT_CHARS} chars). Dropped ${remaining} file(s) from context.`);
+            break;
+        }
+        section += block;
+        fileCharsUsed += block.length;
+        filesIncluded++;
+    }
+    return section;
+}
+// ─── Specialist prompts ────────────────────────────────────────────
+function buildSpecialistSystemPrompt(categoryId, guidelines, config) {
+    const role = SPECIALIST_ROLES[categoryId] || SPECIALIST_ROLES.custom;
+    const label = exports.CATEGORY_LABELS[categoryId] || categoryId;
+    let prompt = `You are a ${role}.
+You are reviewing a pull request diff. Your ONLY job is to find **${label}** issues.
+Do NOT look for anything outside your specialty. Other specialists handle other categories.
+
+RULES:
+1. ONLY flag issues you can prove by pointing to specific changed lines (+ lines) in the diff.
+2. Every finding must be specific: what exact code is wrong, what breaks in production, how to fix it.
+3. Prefer silence over noise. Zero findings is a perfectly valid result — it means the code is solid in your area.
+4. Use the file contents for context ONLY. Don't flag issues in unchanged code.
+5. Max 4 findings. If you found more, keep only the most critical.
+
+YOUR DOMAIN GUIDELINES:
+${guidelines}
+
+${(0, config_1.getSpecialistJsonInstruction)()}`;
+    if (config.extraInstructions) {
+        prompt += `\n\nAdditional company instructions:\n${config.extraInstructions}`;
+    }
+    return prompt;
+}
+function buildSpecialistUserPrompt(pr, config) {
+    let prompt = buildPrMetadata(pr, config);
+    const diffSection = `\n## Diff (what changed)\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
+    const tailInstruction = `\nReview the diff above. Focus ONLY on your specialty area. Return JSON.`;
+    const budgetForFiles = config_1.MAX_PROMPT_CHARS -
+        prompt.length -
+        diffSection.length -
+        tailInstruction.length;
+    prompt += buildFileContentsSection(pr, budgetForFiles);
+    prompt += diffSection;
+    prompt += tailInstruction;
+    return prompt;
+}
+// ─── Judge prompts ─────────────────────────────────────────────────
+function buildJudgeSystemPrompt(config) {
+    let prompt = `You are a principal engineer and the final quality gate for an AI-assisted PR review.
+Specialist reviewers (security, performance, tests, cost) have already examined the code and produced findings.
+Your job is NOT to re-review the code from scratch. Instead, you must:
+
+1. VERIFY each finding against the diff — does the finding reference real code that actually exists in the changed lines? If the line number or code snippet doesn't match the diff, REJECT the finding.
+2. DEDUPLICATE — if multiple specialists flagged the same underlying issue, keep the best-written one.
+3. RE-CALIBRATE severity — is "critical" really critical? Would you page the on-call team? Downgrade if not.
+4. FILTER noise — remove findings that are:
+   - Vague ("ensure X", "consider Y") without specific code references
+   - About unchanged code (context lines, not + lines)
+   - Obvious or unhelpful (things any developer would already know)
+   - Speculative without evidence in the diff
+5. SUMMARIZE — write a 1-3 sentence summary of the PR quality and what it does.
+
+You are the developer's ally, not their adversary. Only surface findings that will genuinely help.
+An empty findings array means the specialists found nothing noteworthy — that's a GOOD outcome.
+
+${(0, config_1.getJudgeJsonInstruction)()}`;
+    if (config.extraInstructions) {
+        prompt += `\n\nAdditional company instructions:\n${config.extraInstructions}`;
+    }
+    return prompt;
+}
+function buildJudgeUserPrompt(specialistResults, pr) {
+    let prompt = `## PR: ${pr.title}\n`;
+    prompt += `**Author:** ${pr.author} | **Branch:** ${pr.headBranch} → ${pr.baseBranch}\n`;
+    if (pr.body) {
+        prompt += `\n### PR Description\n${pr.body}\n`;
+    }
+    prompt += `\n## Raw Findings from Specialist Reviewers\n`;
+    prompt += `Verify each finding against the diff below. Keep only findings that are real, specific, and actionable.\n\n`;
+    let totalFindings = 0;
+    for (const result of specialistResults) {
+        const label = exports.CATEGORY_LABELS[result.categoryId] || result.categoryId;
+        if (result.failed) {
+            prompt += `### ${label} Agent: FAILED (${result.error})\n\n`;
+            continue;
+        }
+        if (result.findings.length === 0) {
+            prompt += `### ${label} Agent: No issues found ✓\n\n`;
+            continue;
+        }
+        prompt += `### ${label} Agent (category id: "${result.categoryId}")\n`;
+        prompt += '```json\n';
+        prompt += JSON.stringify(result.findings.map((f) => ({
+            severity: f.severity,
+            confidence: f.confidence,
+            file: f.file,
+            line: f.line,
+            message: f.message,
+        })), null, 2);
+        prompt += '\n```\n\n';
+        totalFindings += result.findings.length;
+    }
+    if (totalFindings === 0) {
+        prompt += `\n**All specialists reported clean — no issues found.**\n`;
+        prompt += `Write a brief positive summary and return an empty findings array.\n`;
+    }
+    const maxJudgeDiff = 80_000;
+    const diff = pr.diff.length > maxJudgeDiff
+        ? pr.diff.slice(0, maxJudgeDiff) + '\n... [diff truncated for judge review]'
+        : pr.diff;
+    prompt += `\n## Diff (for verification)\n\`\`\`diff\n${diff}\n\`\`\`\n`;
+    prompt += `\nVerify each finding against this diff. Return the final consolidated JSON with only verified, high-quality findings.`;
+    return prompt;
+}
+
+
+/***/ }),
+
+/***/ 3121:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.runSpecialistAgent = runSpecialistAgent;
+const core = __importStar(__nccwpck_require__(7484));
+const findings_1 = __nccwpck_require__(1001);
+const prompts_1 = __nccwpck_require__(2413);
+async function runSpecialistAgent(provider, categoryId, guidelines, pr, config) {
+    const label = prompts_1.CATEGORY_LABELS[categoryId] || categoryId;
+    try {
+        core.info(`[${categoryId}] Specialist starting...`);
+        const systemPrompt = (0, prompts_1.buildSpecialistSystemPrompt)(categoryId, guidelines.guidelines, config);
+        const userPrompt = (0, prompts_1.buildSpecialistUserPrompt)(pr, config);
+        const response = await provider.review({
+            systemPrompt,
+            userPrompt,
+            timeoutMs: config.timeoutMs,
+        });
+        let findings;
+        try {
+            findings = (0, findings_1.parseSpecialistFindings)(response.review, categoryId);
+        }
+        catch {
+            core.warning(`[${categoryId}] Failed to parse specialist output as JSON`);
+            findings = [];
+        }
+        core.info(`[${categoryId}] ${label} found ${findings.length} issue(s) (${response.tokensUsed} tokens)`);
+        return {
+            categoryId,
+            findings,
+            tokens: { input: response.inputTokens, output: response.outputTokens },
+            failed: false,
+        };
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        core.warning(`[${categoryId}] ${label} specialist failed: ${message}`);
+        return {
+            categoryId,
+            findings: [],
+            tokens: { input: 0, output: 0 },
+            failed: true,
+            error: message,
+        };
+    }
+}
+
+
+/***/ }),
+
 /***/ 2973:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -35678,8 +36260,9 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.MAX_PROMPT_CHARS = void 0;
+exports.getSpecialistJsonInstruction = getSpecialistJsonInstruction;
+exports.getJudgeJsonInstruction = getJudgeJsonInstruction;
 exports.loadConfig = loadConfig;
-exports.getJsonOutputInstruction = getJsonOutputInstruction;
 const core = __importStar(__nccwpck_require__(7484));
 const ignore_1 = __nccwpck_require__(7237);
 const DEFAULT_MODELS = {
@@ -35687,57 +36270,121 @@ const DEFAULT_MODELS = {
     openai: 'gpt-4o',
 };
 const DEFAULT_GUIDELINES = {
-    security: `Review for security vulnerabilities including:
-- SQL injection, XSS, CSRF vulnerabilities
-- Hardcoded secrets, API keys, or credentials
-- Insecure deserialization or input handling
-- Missing authentication/authorization checks
-- Insecure cryptographic practices
-- Path traversal or file inclusion risks
-- Dependency vulnerabilities (known CVEs)
-- Improper error handling that leaks sensitive info`,
-    tests: `Review test coverage and quality:
-- Are new code paths covered by unit tests?
-- Are edge cases and error scenarios tested?
-- Are integration tests needed for this change?
-- Do tests follow AAA (Arrange-Act-Assert) pattern?
-- Are mocks/stubs used appropriately?
-- Are test descriptions clear and meaningful?
-- Is there test data that could be sensitive?`,
-    performance: `Review for performance concerns:
-- N+1 query patterns or excessive DB calls
-- Missing database indexes for new queries
-- Unbounded loops or recursive calls
-- Large memory allocations or memory leaks
-- Missing pagination for list endpoints
-- Synchronous operations that should be async
-- Missing caching opportunities
-- Inefficient algorithms (time/space complexity)`,
-    cost: `Review for cost and infrastructure impact:
-- New cloud resources or services being provisioned
-- API calls to paid third-party services
-- Data transfer costs (cross-region, egress)
-- Storage growth implications
-- Compute-intensive operations that could scale poorly
-- Missing rate limiting or throttling
-- Logging volume that could increase costs
-- Database query patterns that affect billing`,
+    security: `Flag ONLY concrete, exploitable security issues visible in the changed code.
+You MUST point to the specific line(s) and explain the attack vector.
+
+Flag these when you see actual vulnerable code:
+- User input flows into SQL/NoSQL queries without parameterisation (show the data flow)
+- User input rendered into HTML/templates without escaping (show the sink)
+- Secrets, API keys, passwords, or tokens hardcoded as string literals (quote the value pattern)
+- Missing auth/authz checks on a new route or endpoint (show the unprotected handler)
+- Dangerous deserialization of untrusted input (e.g. eval, pickle.loads, yaml.load without SafeLoader)
+- Cryptographic misuse you can prove (e.g. ECB mode, MD5 for passwords, static IV)
+- Path traversal where user input reaches filesystem APIs without sanitisation
+
+DO NOT flag:
+- Generic "ensure input is validated" without showing the actual unvalidated input
+- Speculative issues ("could potentially leak") without pointing to the leaking code
+- Error messages that include non-sensitive info (stack traces in dev mode, HTTP status codes)
+- Use of environment variables (they are the CORRECT way to handle config)
+- Anything in test files unless real secrets are committed`,
+    tests: `Flag ONLY specific, concrete gaps in test coverage for the changed code.
+You MUST reference the untested function/branch/line and explain what scenario is missing.
+
+Flag these when the evidence is clear:
+- A new public function/method/endpoint with zero test coverage (name the function)
+- An explicit error/edge-case branch (e.g. catch block, null check, boundary) that has no corresponding test
+- A test that asserts nothing meaningful (e.g. only checks truthiness, or the assertion is tautological)
+- A test that will always pass regardless of implementation (e.g. mocks return the asserted value)
+- Flaky patterns: tests depending on timing, global state, or execution order
+
+DO NOT flag:
+- "Consider adding more tests" without naming the specific untested path
+- Style preferences about test organisation (AAA, describe nesting, test naming)
+- Missing tests for trivial getters/setters/pass-through wrappers
+- That mocks are used (mocks are a standard testing tool; only flag if a mock hides a real bug)
+- Missing integration/e2e tests unless the change is specifically an integration point`,
+    performance: `Flag ONLY performance issues where you can point to the problematic code pattern and explain the scaling impact.
+
+Flag these with specific evidence:
+- A database/API call inside a loop where N is unbounded or user-controlled (show the loop + call)
+- An unbounded query (SELECT * without LIMIT on a user-facing endpoint)
+- O(n²) or worse algorithm where n can be large (show the nested iteration and what n represents)
+- Synchronous blocking call (e.g. fs.readFileSync, sleep) in an async request handler
+- Accumulating data in memory without bounds (e.g. pushing to an array in a stream handler)
+- Missing pagination on a list endpoint that could return thousands of rows
+
+DO NOT flag:
+- "Consider caching" without showing what's being redundantly computed/fetched
+- Performance of code that runs once at startup or in a CLI script
+- Micro-optimisations (string concatenation style, forEach vs for-of on small arrays)
+- Missing database indexes (you cannot see the schema or query plan from a diff)
+- Async/await usage in non-hot-path code`,
+    cost: `Flag ONLY cost issues where the code change will directly cause measurable spend increase.
+You MUST estimate the magnitude or explain the scaling risk.
+
+Flag these with concrete evidence:
+- New provisioning of cloud resources in IaC (Terraform, CloudFormation, Pulumi) without size limits
+- API calls to paid services (OpenAI, Twilio, Stripe, etc.) in a loop or hot path without rate limiting
+- Writing to storage (S3, GCS, database) proportional to request volume without TTL or cleanup
+- Logging at DEBUG/TRACE level enabled in production config (show the log level setting)
+- Data transfer patterns that cross region/cloud boundaries in the hot path
+
+DO NOT flag:
+- Use of any cloud service in general (that's just how software works)
+- Theoretical "could scale poorly" without showing the scaling dimension
+- Logging at INFO/WARN/ERROR level (these are expected in production)
+- One-time migration scripts or batch jobs
+- Cost of compute that's proportional to legitimate user traffic`,
 };
-const JSON_OUTPUT_INSTRUCTION = `
+// ─── JSON output instructions ──────────────────────────────────────
+const SPECIALIST_JSON_INSTRUCTION = `
 You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fence. Schema:
 {
-  "summary": "1-3 sentence overall assessment",
+  "findings": [
+    {
+      "severity": "critical" | "warning" | "suggestion",
+      "confidence": "high" | "medium" | "low",
+      "file": "path/to/file.ts",
+      "line": 42,
+      "message": "What is wrong → Why it matters → How to fix it"
+    }
+  ]
+}
+
+RULES:
+- Every finding MUST have a file and line number. If you can't point to a specific line, don't create the finding.
+- Message format: "[What] → [Why] → [How]" — all three parts required.
+- "confidence": "high" = you can see the bug. "medium" = inferring from patterns. "low" = speculating (prefer to omit).
+- Severity: "critical" = would you wake the on-call? "warning" = real bug but not urgent. "suggestion" = concrete improvement.
+- An empty findings array is a GOOD response. Don't manufacture issues.
+- Max 4 findings. Keep only the most important ones.
+- ❌ Never: "Ensure...", "Consider...", "Make sure...", "Verify that..." — these are not findings.
+- ❌ Never flag unchanged lines, env vars, standard try/catch, or normal error logging.`;
+function getSpecialistJsonInstruction() {
+    return SPECIALIST_JSON_INSTRUCTION;
+}
+const JUDGE_JSON_INSTRUCTION = `
+You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fence. Schema:
+{
+  "summary": "1-3 sentence overall assessment of the PR",
   "findings": [
     {
       "category": "<category_id>",
       "severity": "critical" | "warning" | "suggestion",
+      "confidence": "high" | "medium" | "low",
       "file": "path/to/file.ts",
       "line": 42,
-      "message": "Clear, actionable description"
+      "message": "What is wrong → Why it matters → How to fix it"
     }
   ]
 }
-If no issues for a category, omit findings for that category. Use severity "critical" only for issues that must block merge. Always include "file" and "line" when possible.`;
+
+ONLY include findings that passed your verification. Empty findings = clean PR = good outcome.`;
+function getJudgeJsonInstruction() {
+    return JUDGE_JSON_INSTRUCTION;
+}
+// ─── Config loading ────────────────────────────────────────────────
 function bool(value, fallback) {
     if (value === 'true')
         return true;
@@ -35767,7 +36414,6 @@ const ENV_VAR_NAMES = {
     max_file_size: 'MAX_FILE_SIZE',
     github_token: 'GITHUB_TOKEN',
 };
-// Action input -> env var -> fallback
 function resolve(inputName, fallback = '') {
     return core.getInput(inputName) || process.env[ENV_VAR_NAMES[inputName]] || fallback;
 }
@@ -35786,12 +36432,12 @@ function resolveApiKey(provider) {
     throw new Error(`No API key found. Either set the "api_key" input or add a "${envName}" secret to your repository.`);
 }
 function loadConfig() {
-    const provider = (resolve('provider', 'anthropic'));
+    const provider = resolve('provider', 'anthropic');
     if (provider !== 'anthropic' && provider !== 'openai') {
         throw new Error(`Invalid provider "${provider}". Use "anthropic" or "openai".`);
     }
     const model = resolve('model') || DEFAULT_MODELS[provider];
-    const enabledCategories = (resolve('review_categories', 'security,tests,performance,cost'))
+    const enabledCategories = resolve('review_categories', 'security,tests,performance,cost')
         .split(',')
         .map((c) => c.trim().toLowerCase())
         .filter(Boolean);
@@ -35840,9 +36486,6 @@ function loadConfig() {
             .filter(Boolean),
         maxFileSize: parseInt(resolve('max_file_size', '10000'), 10),
     };
-}
-function getJsonOutputInstruction() {
-    return JSON_OUTPUT_INSTRUCTION;
 }
 /**
  * Safe cross-model default for maximum combined prompt size (chars).
@@ -35963,10 +36606,29 @@ function parseDiffForCommentTargets(diff) {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.parseStructuredReview = parseStructuredReview;
+exports.parseSpecialistFindings = parseSpecialistFindings;
 exports.hasCriticalFindings = hasCriticalFindings;
 exports.extractJson = extractJson;
 exports.formatFindingsMarkdown = formatFindingsMarkdown;
 const VALID_SEVERITIES = new Set(['critical', 'warning', 'suggestion']);
+const VALID_CONFIDENCES = new Set(['high', 'medium', 'low']);
+const MAX_FINDINGS = 8;
+const VAGUE_PATTERNS = [
+    /^ensure\b/i,
+    /^make sure\b/i,
+    /^consider\b/i,
+    /^verify that\b/i,
+    /^check that\b/i,
+    /^be careful\b/i,
+    /\bshould be\b.*\bproperly\b/i,
+    /\bpotentially\b.*\bvulnerable\b/i,
+    /\bcould potentially\b/i,
+    /\bmay lead to\b.*\bissues\b/i,
+    /\bmight cause\b.*\bproblems\b/i,
+];
+function isVagueFinding(message) {
+    return VAGUE_PATTERNS.some((pattern) => pattern.test(message.trim()));
+}
 function parseStructuredReview(raw) {
     const json = extractJson(raw);
     const parsed = JSON.parse(json);
@@ -35984,16 +36646,73 @@ function parseStructuredReview(raw) {
                 continue;
             if (!f.category || typeof f.category !== 'string')
                 continue;
+            const confidence = VALID_CONFIDENCES.has(String(f.confidence ?? '').toLowerCase())
+                ? String(f.confidence).toLowerCase()
+                : 'medium';
+            if (confidence === 'low')
+                continue;
+            if (isVagueFinding(f.message))
+                continue;
+            if (!f.file || typeof f.file !== 'string')
+                continue;
             findings.push({
                 category: f.category,
                 severity: severity,
-                file: typeof f.file === 'string' ? f.file : undefined,
+                confidence,
+                file: f.file,
                 line: typeof f.line === 'number' ? f.line : undefined,
                 message: f.message,
             });
         }
     }
-    return { summary, findings };
+    const sorted = findings.sort((a, b) => {
+        const severityOrder = { critical: 0, warning: 1, suggestion: 2 };
+        const confOrder = { high: 0, medium: 1 };
+        const sDiff = (severityOrder[a.severity] ?? 2) - (severityOrder[b.severity] ?? 2);
+        if (sDiff !== 0)
+            return sDiff;
+        return (confOrder[a.confidence] ?? 1) - (confOrder[b.confidence] ?? 1);
+    });
+    return { summary, findings: sorted.slice(0, MAX_FINDINGS) };
+}
+/**
+ * Parse output from a specialist agent where category is known externally.
+ * Simpler schema: { findings: [{ severity, confidence, file, line, message }] }
+ */
+function parseSpecialistFindings(raw, categoryId) {
+    const json = extractJson(raw);
+    const parsed = JSON.parse(json);
+    const findings = [];
+    if (!Array.isArray(parsed.findings))
+        return findings;
+    for (const item of parsed.findings) {
+        if (!item || typeof item !== 'object')
+            continue;
+        const f = item;
+        const severity = String(f.severity ?? '').toLowerCase();
+        if (!VALID_SEVERITIES.has(severity))
+            continue;
+        if (!f.message || typeof f.message !== 'string')
+            continue;
+        const confidence = VALID_CONFIDENCES.has(String(f.confidence ?? '').toLowerCase())
+            ? String(f.confidence).toLowerCase()
+            : 'medium';
+        if (confidence === 'low')
+            continue;
+        if (isVagueFinding(f.message))
+            continue;
+        if (!f.file || typeof f.file !== 'string')
+            continue;
+        findings.push({
+            category: categoryId,
+            severity: severity,
+            confidence,
+            file: f.file,
+            line: typeof f.line === 'number' ? f.line : undefined,
+            message: f.message,
+        });
+    }
+    return findings;
 }
 function hasCriticalFindings(review) {
     return review.findings.some((f) => f.severity === 'critical');
@@ -36053,12 +36772,10 @@ function formatFindingsMarkdown(structured, categoryLabels) {
         md += `### ${label}\n\n`;
         for (const f of findings) {
             const icon = severityIcon(f.severity);
-            const loc = f.file
-                ? f.line
-                    ? ` \`${f.file}:${f.line}\``
-                    : ` \`${f.file}\``
-                : '';
-            md += `- ${icon} **${f.severity.toUpperCase()}**${loc}: ${f.message}\n`;
+            const loc = f.line
+                ? ` \`${f.file}:${f.line}\``
+                : ` \`${f.file}\``;
+            md += `- ${icon} **${f.severity.toUpperCase()}**${loc} — ${f.message}\n`;
         }
         md += '\n';
     }
@@ -36618,7 +37335,7 @@ const core = __importStar(__nccwpck_require__(7484));
 const config_1 = __nccwpck_require__(2973);
 const providers_1 = __nccwpck_require__(7486);
 const github_1 = __nccwpck_require__(9248);
-const review_1 = __nccwpck_require__(7491);
+const agents_1 = __nccwpck_require__(6758);
 const sanitize_1 = __nccwpck_require__(5540);
 const MAX_OUTPUT_BYTES = 900_000; // GitHub Actions output limit is ~1MB
 async function main() {
@@ -36637,7 +37354,7 @@ async function main() {
             maxFileSize: config.maxFileSize,
         });
         core.info(`PR #${pr.number}: "${pr.title}" (${pr.reviewedFiles.length} files to review)`);
-        const result = await (0, review_1.runReview)(provider, config, pr);
+        const result = await (0, agents_1.runReview)(provider, config, pr);
         // Truncate output to stay under GitHub Actions 1MB limit
         const reviewOutput = result.markdown.length > MAX_OUTPUT_BYTES
             ? result.markdown.slice(0, MAX_OUTPUT_BYTES) + '\n[truncated]'
@@ -36915,245 +37632,6 @@ async function withRetry(fn, options = {}) {
         }
     }
     throw lastError;
-}
-
-
-/***/ }),
-
-/***/ 7491:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.runReview = runReview;
-const core = __importStar(__nccwpck_require__(7484));
-const config_1 = __nccwpck_require__(2973);
-const findings_1 = __nccwpck_require__(1001);
-const cost_1 = __nccwpck_require__(8666);
-const CATEGORY_LABELS = {
-    security: 'Security',
-    tests: 'Test Coverage',
-    performance: 'Performance',
-    cost: 'Cost & Infrastructure',
-    custom: 'Custom Review',
-};
-function buildSystemPrompt(config) {
-    let prompt = `You are an expert code reviewer for enterprise pull requests.
-You are given both the diff (what changed) and the full contents of changed files (for context).
-Use the full file contents to understand the surrounding code, imports, types, and how the change fits into the codebase.
-Review the diff against ALL provided category guidelines in a single pass.
-Be concise, specific, and reference file paths and line numbers when possible.
-Do NOT repeat the diff or file contents. Focus only on actionable findings.
-
-${(0, config_1.getJsonOutputInstruction)()}`;
-    if (config.extraInstructions) {
-        prompt += `\n\nAdditional company instructions:\n${config.extraInstructions}`;
-    }
-    return prompt;
-}
-function buildCombinedPrompt(activeCategories, pr, config) {
-    let prompt = `## Pull Request\n`;
-    prompt += `- **Title:** ${pr.title}\n`;
-    prompt += `- **Author:** ${pr.author}\n`;
-    prompt += `- **Branch:** ${pr.headBranch} → ${pr.baseBranch}\n`;
-    prompt += `- **Files reviewed:** ${pr.reviewedFiles.length} (${pr.reviewedFiles.join(', ') || 'none'})\n`;
-    if (pr.ignoredFiles.length > 0) {
-        prompt += `- **Files skipped (ignored):** ${pr.ignoredFiles.join(', ')}\n`;
-    }
-    if (pr.body) {
-        prompt += `\n### PR Description\n${pr.body}\n`;
-    }
-    if (config.customPrompt) {
-        prompt += `\n### Additional Context\n${config.customPrompt}\n`;
-    }
-    prompt += `\n## Review Categories\n`;
-    for (const { id, guidelines } of activeCategories) {
-        const label = CATEGORY_LABELS[id] || id;
-        prompt += `\n### ${label} (category id: "${id}")\n${guidelines.guidelines}\n`;
-    }
-    const diffSection = `\n## Diff (what changed)\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
-    const tailInstruction = `\nReview the diff for every category above. Use the full file contents for context but focus findings on the changed lines. Return JSON with findings tagged by category id. Include "file" and "line" fields wherever possible so findings can be posted as inline comments.`;
-    const budgetForFiles = config_1.MAX_PROMPT_CHARS - prompt.length - diffSection.length - tailInstruction.length;
-    if (pr.fileContents.length > 0 && budgetForFiles > 500) {
-        prompt += `\n## File Contents (full context)\n`;
-        prompt += `Use these to understand the complete code structure, imports, types, and surrounding logic.\n\n`;
-        let fileCharsUsed = 0;
-        let filesIncluded = 0;
-        for (const file of pr.fileContents) {
-            const ext = file.path.slice(file.path.lastIndexOf('.') + 1);
-            const block = `### ${file.path}${file.truncated ? ' (truncated)' : ''}\n\`\`\`${ext}\n${file.content}\n\`\`\`\n\n`;
-            if (fileCharsUsed + block.length > budgetForFiles) {
-                const remaining = pr.fileContents.length - filesIncluded;
-                core.warning(`Prompt budget exceeded (${config_1.MAX_PROMPT_CHARS} chars). Dropped ${remaining} file(s) from context to fit within model limits.`);
-                break;
-            }
-            prompt += block;
-            fileCharsUsed += block.length;
-            filesIncluded++;
-        }
-    }
-    else if (pr.fileContents.length > 0) {
-        core.warning(`Prompt too large even without file contents (${prompt.length + diffSection.length} chars). File context omitted entirely.`);
-    }
-    prompt += diffSection;
-    prompt += tailInstruction;
-    return prompt;
-}
-async function runReview(provider, config, pr) {
-    const activeCategories = [];
-    for (const [id, guidelines] of Object.entries(config.categories)) {
-        if (!guidelines.enabled)
-            continue;
-        if (!guidelines.guidelines && id !== 'custom')
-            continue;
-        if (id === 'custom' && !guidelines.guidelines)
-            continue;
-        activeCategories.push({ id, guidelines });
-    }
-    if (activeCategories.length === 0) {
-        core.warning('No review categories enabled.');
-        return {
-            markdown: '# 🤖 AI PR Review\n\nNo review categories were enabled.\n',
-            hasCritical: false,
-            categories: [],
-            tokensUsed: 0,
-            inputTokens: 0,
-            outputTokens: 0,
-        };
-    }
-    if (pr.reviewedFiles.length === 0 && pr.diff.trim().length === 0) {
-        return {
-            markdown: '# 🤖 AI PR Review\n\nNo reviewable files in this PR (all changed files matched ignore patterns).\n',
-            hasCritical: false,
-            categories: activeCategories.map((c) => c.id),
-            tokensUsed: 0,
-            inputTokens: 0,
-            outputTokens: 0,
-        };
-    }
-    const categoryIds = activeCategories.map((c) => c.id);
-    core.info(`Running combined review for: ${categoryIds.map((id) => CATEGORY_LABELS[id] || id).join(', ')}`);
-    const systemPrompt = buildSystemPrompt(config);
-    const userPrompt = buildCombinedPrompt(activeCategories, pr, config);
-    let response;
-    try {
-        response = await provider.review({ systemPrompt, userPrompt, timeoutMs: config.timeoutMs });
-        core.info(`Review complete (${response.tokensUsed} tokens)`);
-    }
-    catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        core.error(`Review failed: ${message}`);
-        throw err;
-    }
-    const structured = response.structured;
-    // P0 fix: when JSON parsing fails, fall back to text-based critical detection
-    const hasCritical = structured
-        ? (0, findings_1.hasCriticalFindings)(structured)
-        : detectCriticalInText(response.review);
-    const markdown = formatReviewMarkdown(response, structured, pr, config, categoryIds);
-    return {
-        markdown,
-        hasCritical,
-        categories: categoryIds,
-        structured,
-        tokensUsed: response.tokensUsed,
-        inputTokens: response.inputTokens,
-        outputTokens: response.outputTokens,
-    };
-}
-/**
- * Fallback when structured JSON parsing fails.
- * Scans raw AI text for unambiguous critical-severity indicators.
- */
-function detectCriticalInText(text) {
-    const lower = text.toLowerCase();
-    return (/\bcritical\b/.test(lower) &&
-        (/\bseverity['":\s]+critical/i.test(text) ||
-            /🔴\s*critical/i.test(text) ||
-            /\*\*critical\*\*/i.test(text)));
-}
-function formatReviewMarkdown(response, structured, pr, config, categories) {
-    let md = `# 🤖 AI PR Review\n\n`;
-    md += `**PR:** #${pr.number} — ${pr.title}\n`;
-    md += `**Provider:** ${config.provider} (${config.model})\n`;
-    md += `**Files reviewed:** ${pr.reviewedFiles.length} / ${pr.changedFiles.length} changed\n`;
-    if (pr.redactionCount > 0) {
-        md += `**Secrets redacted:** ${pr.redactionCount} value(s) removed before AI review\n`;
-    }
-    // Status badge
-    if (structured) {
-        const criticalCount = structured.findings.filter((f) => f.severity === 'critical').length;
-        if (criticalCount > 0) {
-            md += `\n> 🚨 **${criticalCount} critical issue(s) found — merge blocked**\n`;
-        }
-        else if (structured.findings.length > 0) {
-            md += `\n> ✅ **No critical issues — ${structured.findings.length} suggestion(s)/warning(s)**\n`;
-        }
-        else {
-            md += `\n> ✅ **All clear — no issues found**\n`;
-        }
-    }
-    md += `\n---\n\n`;
-    if (structured && structured.findings.length > 0) {
-        const critical = structured.findings.filter((f) => f.severity === 'critical').length;
-        const warning = structured.findings.filter((f) => f.severity === 'warning').length;
-        const suggestion = structured.findings.filter((f) => f.severity === 'suggestion').length;
-        md += `**Findings:** 🔴 ${critical} critical · 🟡 ${warning} warning · 🔵 ${suggestion} suggestion\n\n`;
-        md += (0, findings_1.formatFindingsMarkdown)(structured, CATEGORY_LABELS);
-    }
-    else if (structured) {
-        md += structured.summary || 'No issues found.\n';
-    }
-    else {
-        md += `> ⚠️ Could not parse structured response. Raw output:\n\n`;
-        md += response.review.slice(0, 50000);
-    }
-    md += `\n---\n\n`;
-    md += `<details>\n<summary>📊 Review Stats</summary>\n\n`;
-    md += `- Categories: ${categories.map((id) => CATEGORY_LABELS[id] || id).join(', ')}\n`;
-    md += `- API calls: 1 (combined review)\n`;
-    md += `- Tokens: ${response.inputTokens.toLocaleString()} input + ${response.outputTokens.toLocaleString()} output = ${response.tokensUsed.toLocaleString()} total\n`;
-    const cost = (0, cost_1.estimateCost)(config.model, response.inputTokens, response.outputTokens);
-    if (cost) {
-        md += `- Estimated cost: ${cost}\n`;
-    }
-    md += `- Provider: ${config.provider} / ${config.model}\n`;
-    md += `</details>\n`;
-    return md;
 }
 
 

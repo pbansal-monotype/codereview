@@ -86,6 +86,45 @@ export function parseStructuredReview(raw: string): StructuredReview {
   return { summary, findings: sorted.slice(0, MAX_FINDINGS) };
 }
 
+/**
+ * Parse output from a specialist agent where category is known externally.
+ * Simpler schema: { findings: [{ severity, confidence, file, line, message }] }
+ */
+export function parseSpecialistFindings(raw: string, categoryId: string): Finding[] {
+  const json = extractJson(raw);
+  const parsed = JSON.parse(json) as { findings?: unknown[] };
+  const findings: Finding[] = [];
+
+  if (!Array.isArray(parsed.findings)) return findings;
+
+  for (const item of parsed.findings) {
+    if (!item || typeof item !== 'object') continue;
+    const f = item as Record<string, unknown>;
+    const severity = String(f.severity ?? '').toLowerCase();
+    if (!VALID_SEVERITIES.has(severity)) continue;
+    if (!f.message || typeof f.message !== 'string') continue;
+
+    const confidence = VALID_CONFIDENCES.has(String(f.confidence ?? '').toLowerCase())
+      ? (String(f.confidence).toLowerCase() as Confidence)
+      : 'medium';
+
+    if (confidence === 'low') continue;
+    if (isVagueFinding(f.message as string)) continue;
+    if (!f.file || typeof f.file !== 'string') continue;
+
+    findings.push({
+      category: categoryId,
+      severity: severity as Severity,
+      confidence,
+      file: f.file,
+      line: typeof f.line === 'number' ? f.line : undefined,
+      message: f.message as string,
+    });
+  }
+
+  return findings;
+}
+
 export function hasCriticalFindings(review: StructuredReview): boolean {
   return review.findings.some((f) => f.severity === 'critical');
 }

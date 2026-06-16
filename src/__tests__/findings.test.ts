@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseStructuredReview,
+  parseSpecialistFindings,
   hasCriticalFindings,
   extractJson,
 } from '../findings';
@@ -157,5 +158,77 @@ describe('parseStructuredReview', () => {
       }),
     );
     assert.equal(review.findings.length, 1);
+  });
+});
+
+describe('parseSpecialistFindings', () => {
+  it('parses specialist output and injects category', () => {
+    const raw = JSON.stringify({
+      findings: [
+        {
+          severity: 'warning',
+          confidence: 'high',
+          file: 'src/db.ts',
+          line: 15,
+          message: 'Query inside for loop → N+1 → batch the query',
+        },
+      ],
+    });
+    const findings = parseSpecialistFindings(raw, 'performance');
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].category, 'performance');
+    assert.equal(findings[0].severity, 'warning');
+    assert.equal(findings[0].confidence, 'high');
+    assert.equal(findings[0].file, 'src/db.ts');
+  });
+
+  it('filters vague findings from specialist output', () => {
+    const raw = JSON.stringify({
+      findings: [
+        {
+          severity: 'suggestion',
+          confidence: 'medium',
+          file: 'src/api.ts',
+          line: 5,
+          message: 'Consider adding caching for the response',
+        },
+        {
+          severity: 'warning',
+          confidence: 'high',
+          file: 'src/api.ts',
+          line: 20,
+          message: 'SELECT * without LIMIT on user-facing endpoint → unbounded result set → add LIMIT clause',
+        },
+      ],
+    });
+    const findings = parseSpecialistFindings(raw, 'performance');
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].line, 20);
+  });
+
+  it('filters findings without file path', () => {
+    const raw = JSON.stringify({
+      findings: [
+        { severity: 'warning', message: 'Missing auth check' },
+        { severity: 'warning', file: 'src/route.ts', line: 3, message: 'No auth middleware on POST /users → unauthenticated access → add authMiddleware' },
+      ],
+    });
+    const findings = parseSpecialistFindings(raw, 'security');
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].file, 'src/route.ts');
+  });
+
+  it('returns empty array when specialist finds no issues', () => {
+    const raw = JSON.stringify({ findings: [] });
+    const findings = parseSpecialistFindings(raw, 'tests');
+    assert.equal(findings.length, 0);
+  });
+
+  it('handles markdown-fenced JSON from specialist', () => {
+    const raw = '```json\n{"findings":[{"severity":"critical","confidence":"high","file":"src/auth.ts","line":1,"message":"Hardcoded secret → exposure → use env var"}]}\n```';
+    const findings = parseSpecialistFindings(raw, 'security');
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].category, 'security');
+    assert.equal(findings[0].severity, 'critical');
   });
 });

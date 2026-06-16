@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import { loadConfig } from './config';
 import { createProvider } from './providers';
 import { getPullRequestData, postReviewComment, postInlineReview } from './github';
-import { runReview } from './review';
+import { runReview } from './agents';
 import { sanitizeErrorMessage } from './sanitize';
 
 const MAX_OUTPUT_BYTES = 900_000; // GitHub Actions output limit is ~1MB

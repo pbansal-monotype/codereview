@@ -109,10 +109,40 @@ DO NOT flag:
 - Cost of compute that's proportional to legitimate user traffic`,
 };
 
-const JSON_OUTPUT_INSTRUCTION = `
+// ─── JSON output instructions ──────────────────────────────────────
+
+const SPECIALIST_JSON_INSTRUCTION = `
 You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fence. Schema:
 {
-  "summary": "1-3 sentence overall assessment of the PR quality and what it does",
+  "findings": [
+    {
+      "severity": "critical" | "warning" | "suggestion",
+      "confidence": "high" | "medium" | "low",
+      "file": "path/to/file.ts",
+      "line": 42,
+      "message": "What is wrong → Why it matters → How to fix it"
+    }
+  ]
+}
+
+RULES:
+- Every finding MUST have a file and line number. If you can't point to a specific line, don't create the finding.
+- Message format: "[What] → [Why] → [How]" — all three parts required.
+- "confidence": "high" = you can see the bug. "medium" = inferring from patterns. "low" = speculating (prefer to omit).
+- Severity: "critical" = would you wake the on-call? "warning" = real bug but not urgent. "suggestion" = concrete improvement.
+- An empty findings array is a GOOD response. Don't manufacture issues.
+- Max 4 findings. Keep only the most important ones.
+- ❌ Never: "Ensure...", "Consider...", "Make sure...", "Verify that..." — these are not findings.
+- ❌ Never flag unchanged lines, env vars, standard try/catch, or normal error logging.`;
+
+export function getSpecialistJsonInstruction(): string {
+  return SPECIALIST_JSON_INSTRUCTION;
+}
+
+const JUDGE_JSON_INSTRUCTION = `
+You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fence. Schema:
+{
+  "summary": "1-3 sentence overall assessment of the PR",
   "findings": [
     {
       "category": "<category_id>",
@@ -125,26 +155,13 @@ You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fen
   ]
 }
 
-FINDING QUALITY RULES (mandatory):
-- Every finding MUST reference a specific file and line number from the diff. Findings without location are useless noise.
-- Every message MUST follow the pattern: "[What] → [Why] → [How]". Example: "User input \`req.params.id\` is concatenated into SQL query without parameterisation → allows SQL injection → use parameterised queries: \`db.query('SELECT * FROM users WHERE id = ?', [req.params.id])\`"
-- Set "confidence" to "high" only when you can see the bug/issue directly in the code. Use "medium" when you're inferring from patterns. Use "low" when speculating — but prefer to omit low-confidence findings entirely.
-- If you cannot point to a specific line that is problematic, DO NOT create a finding.
+ONLY include findings that passed your verification. Empty findings = clean PR = good outcome.`;
 
-SEVERITY CALIBRATION:
-- "critical": Exploitable vulnerability, data loss, crash in production, broken auth. Would you mass-page the on-call team? If not, it's not critical.
-- "warning": Real issue that should be fixed but won't cause an incident today. Missing error handling that will surface as a bug, resource leak under load, race condition.
-- "suggestion": Genuine improvement opportunity backed by evidence. A specific test case that's missing for a specific branch, a concrete N+1 query.
+export function getJudgeJsonInstruction(): string {
+  return JUDGE_JSON_INSTRUCTION;
+}
 
-ANTI-PATTERNS (never do these):
-- ❌ "Ensure X is properly handled" — vague, not actionable, tells the developer nothing new
-- ❌ "Consider adding validation" — where? what input? what validation?
-- ❌ Restating the category guideline as a finding
-- ❌ Flagging patterns that are normal and expected (env vars, try/catch, error logging)
-- ❌ More than 8 findings total — if you have more, keep only the highest-severity ones
-- ❌ Findings on unchanged lines (context lines in the diff that the PR author didn't touch)
-
-If no issues for a category, omit findings for it. An empty findings array is a GOOD outcome — it means the code is solid.`;
+// ─── Config loading ────────────────────────────────────────────────
 
 function bool(value: string, fallback: boolean): boolean {
   if (value === 'true') return true;
@@ -175,7 +192,6 @@ const ENV_VAR_NAMES: Record<string, string> = {
   github_token: 'GITHUB_TOKEN',
 };
 
-// Action input -> env var -> fallback
 function resolve(inputName: string, fallback = ''): string {
   return core.getInput(inputName) || process.env[ENV_VAR_NAMES[inputName]] || fallback;
 }
@@ -199,7 +215,7 @@ function resolveApiKey(provider: 'anthropic' | 'openai'): string {
 }
 
 export function loadConfig(): ReviewConfig {
-  const provider = (resolve('provider', 'anthropic')) as 'anthropic' | 'openai';
+  const provider = resolve('provider', 'anthropic') as 'anthropic' | 'openai';
 
   if (provider !== 'anthropic' && provider !== 'openai') {
     throw new Error(`Invalid provider "${provider}". Use "anthropic" or "openai".`);
@@ -207,7 +223,7 @@ export function loadConfig(): ReviewConfig {
 
   const model = resolve('model') || DEFAULT_MODELS[provider];
 
-  const enabledCategories = (resolve('review_categories', 'security,tests,performance,cost'))
+  const enabledCategories = resolve('review_categories', 'security,tests,performance,cost')
     .split(',')
     .map((c) => c.trim().toLowerCase())
     .filter(Boolean);
@@ -261,10 +277,6 @@ export function loadConfig(): ReviewConfig {
       .filter(Boolean),
     maxFileSize: parseInt(resolve('max_file_size', '10000'), 10),
   };
-}
-
-export function getJsonOutputInstruction(): string {
-  return JSON_OUTPUT_INSTRUCTION;
 }
 
 /**
