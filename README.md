@@ -4,35 +4,9 @@ A GitHub Action that uses **Claude (Anthropic)** or **OpenAI** to review pull re
 
 ## Quick start
 
-### Centralized (recommended)
+**1. Add `ANTHROPIC_API_KEY`** (or `OPENAI_API_KEY`) as a secret at your GitHub org level (Settings > Secrets) or in the individual repo.
 
-API key lives in **this repo only**. Consumer repos just need a workflow file.
-
-**Setup:** Add `ANTHROPIC_API_KEY` as a secret in the `pbansal-monotype/codereview` repo.
-
-**In each consumer repo**, create `.github/workflows/pr-review.yml`:
-
-```yaml
-name: AI PR Review
-
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-
-jobs:
-  review:
-    uses: pbansal-monotype/codereview/.github/workflows/pr-review.yml@main
-    with:
-      provider: 'anthropic'
-      review_categories: 'security,tests,performance,cost'
-      custom_prompt: |
-        This is a Node.js microservice using Express and PostgreSQL.
-    secrets: inherit
-```
-
-### Self-managed
-
-Add `ANTHROPIC_API_KEY` as a secret in the consumer repo, then:
+**2. Create `.github/workflows/pr-review.yml`** in your repo:
 
 ```yaml
 name: AI PR Review
@@ -48,8 +22,6 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
-    env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -65,11 +37,13 @@ jobs:
             This is a Node.js microservice using Express and PostgreSQL.
 ```
 
+That's it. Every PR now gets an AI review.
+
 ## Inputs
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `provider` | Yes | `anthropic` | `anthropic` or `openai` |
+| `provider` | No | `anthropic` | `anthropic` or `openai` |
 | `api_key` | No | — | API key (falls back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env var) |
 | `github_token` | No | `${{ github.token }}` | GitHub token for PR access |
 | `model` | No | auto | Model name (`claude-sonnet-4-20250514` / `gpt-4o`) |
@@ -99,13 +73,15 @@ jobs:
 
 Every input follows: **action input > env var > built-in default**.
 
-Set org-level GitHub variables (Settings > Variables) to define org-wide defaults. Individual repos override with repo-level variables or action inputs.
+Set org-level GitHub variables/secrets (Settings > Variables/Secrets) to define org-wide defaults. Individual repos can override with repo-level variables or action inputs.
 
 | Action Input | Env Var |
 |--------------|---------|
 | `provider` | `REVIEW_PROVIDER` |
 | `model` | `REVIEW_MODEL` |
 | `review_categories` | `REVIEW_CATEGORIES` |
+| `api_key` | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` |
+| `github_token` | `GITHUB_TOKEN` |
 | `security_guidelines` | `SECURITY_GUIDELINES` |
 | `test_guidelines` | `TEST_GUIDELINES` |
 | `performance_guidelines` | `PERFORMANCE_GUIDELINES` |
@@ -122,8 +98,6 @@ Set org-level GitHub variables (Settings > Variables) to define org-wide default
 | `include_file_contents` | `INCLUDE_FILE_CONTENTS` |
 | `context_files` | `CONTEXT_FILES` |
 | `max_file_size` | `MAX_FILE_SIZE` |
-
-`api_key` and `github_token` use `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` and `GITHUB_TOKEN`.
 
 ## Outputs
 

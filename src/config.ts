@@ -120,6 +120,7 @@ const ENV_VAR_NAMES: Record<string, string> = {
   include_file_contents: 'INCLUDE_FILE_CONTENTS',
   context_files: 'CONTEXT_FILES',
   max_file_size: 'MAX_FILE_SIZE',
+  github_token: 'GITHUB_TOKEN',
 };
 
 // Action input -> env var -> fallback
@@ -170,7 +171,7 @@ export function loadConfig(): ReviewConfig {
   }
 
   const apiKey = resolveApiKey(provider);
-  const githubToken = core.getInput('github_token') || process.env.GITHUB_TOKEN || '';
+  const githubToken = resolve('github_token');
   if (!githubToken) {
     throw new Error('No github_token provided and GITHUB_TOKEN env var is not set.');
   }
