@@ -13,16 +13,29 @@ interface FormatOptions {
   totalTokens: TokenUsage;
   apiCalls: number;
   specialistResults: SpecialistResult[];
+  failClosed?: boolean;
+  failReason?: string;
 }
 
 export function formatReviewMarkdown(opts: FormatOptions): string {
-  const { structured, pr, config, categories, totalTokens, apiCalls } = opts;
+  const { structured, pr, config, categories, totalTokens, apiCalls, failClosed, failReason } =
+    opts;
 
   let md = `# 🤖 AI PR Review\n\n`;
   md += `**PR:** #${pr.number} — ${pr.title}\n`;
   md += `**Provider:** ${config.provider} (${config.model})\n`;
   md += `**Mode:** Multi-agent (${apiCalls - 1} specialists + judge)\n`;
   md += `**Files reviewed:** ${pr.reviewedFiles.length} / ${pr.changedFiles.length} changed\n`;
+
+  if (failClosed) {
+    md += `\n> **Merge blocked — judge agent failed and the pipeline is fail-closed.**\n`;
+    if (failReason) {
+      md += `> Error: \`${failReason}\`\n`;
+    }
+    md += `> Please review this PR manually or re-run the workflow.\n`;
+    md += `\n---\n`;
+    return md;
+  }
 
   if (pr.redactionCount > 0) {
     md += `**Secrets redacted:** ${pr.redactionCount} value(s) removed before AI review\n`;

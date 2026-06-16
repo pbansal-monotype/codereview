@@ -3,8 +3,8 @@ import { ReviewConfig, CategoryGuidelines } from '../config';
 import { hasCriticalFindings } from '../findings';
 import { AIProvider } from '../providers';
 import { PullRequestData } from '../github';
-import { ReviewResult } from './types';
-import { CATEGORY_LABELS } from './prompts';
+import { ReviewResult, SpecialistResult } from './types';
+import { CATEGORY_LABELS, buildSharedContext } from './prompts';
 import { runSpecialistAgent } from './specialist';
 import { runJudge } from './judge';
 import { formatReviewMarkdown } from './format';
@@ -58,12 +58,33 @@ export async function runReview(
     `Fan-out to ${activeCategories.length} specialists: ${categoryIds.map((id) => CATEGORY_LABELS[id] || id).join(', ')}`,
   );
 
-  // Stage 1: Fan out to all specialist agents in parallel
-  const specialistResults = await Promise.all(
+  // Build shared context once — PR metadata + full file contents + diff.
+  // All specialists and the Judge receive the same pre-built context so the
+  // expensive file-assembly step runs exactly once per review.
+  const sharedContext = buildSharedContext(pr, config);
+
+  // Stage 1: Fan out to all specialist agents in parallel via allSettled so
+  // a single crashed specialist never aborts the rest of the pipeline.
+  const settled = await Promise.allSettled(
     activeCategories.map((cat) =>
-      runSpecialistAgent(provider, cat.id, cat.guidelines, pr, config),
+      runSpecialistAgent(provider, cat.id, cat.guidelines, pr, config, sharedContext),
     ),
   );
+
+  const specialistResults: SpecialistResult[] = settled.map((result, i) => {
+    if (result.status === 'fulfilled') return result.value;
+    const cat = activeCategories[i];
+    const message =
+      result.reason instanceof Error ? result.reason.message : String(result.reason);
+    core.warning(`[${cat.id}] Specialist crashed (unhandled): ${message}`);
+    return {
+      categoryId: cat.id,
+      findings: [],
+      tokens: { input: 0, output: 0 },
+      failed: true,
+      error: message,
+    };
+  });
 
   const totalSpecialistFindings = specialistResults.reduce(
     (sum, r) => sum + r.findings.length,
@@ -92,7 +113,11 @@ export async function runReview(
     }
   }
 
-  // Stage 2: Run judge agent to verify, deduplicate, and rate findings
+  // Stage 2: Judge — verify, deduplicate, recalibrate, cap the final list.
+  // Receives the same sharedContext (diff + full files) so it can check every
+  // finding against real code, not just a truncated diff.
+  // Fail-closed: if the judge itself crashes we block the PR rather than
+  // silently shipping unverified findings.
   let judgeTokens = { input: 0, output: 0 };
   let structured;
 
@@ -102,18 +127,36 @@ export async function runReview(
       specialistResults,
       pr,
       config,
+      sharedContext,
     );
     structured = judgeResult.structured;
     judgeTokens = judgeResult.tokens;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    core.warning(
-      `[judge] Judge failed: ${message} — falling back to raw specialist findings`,
-    );
-    const allFindings = specialistResults.flatMap((r) => r.findings);
-    structured = {
-      summary: 'Judge unavailable. Showing unfiltered specialist findings.',
-      findings: allFindings,
+    core.error(`[judge] Judge failed: ${message} — failing closed (blocking PR)`);
+
+    const totalInput = specialistResults.reduce((s, r) => s + r.tokens.input, 0);
+    const totalOutput = specialistResults.reduce((s, r) => s + r.tokens.output, 0);
+
+    const markdown = formatReviewMarkdown({
+      structured: undefined,
+      pr,
+      config,
+      categories: categoryIds,
+      totalTokens: { input: totalInput, output: totalOutput },
+      apiCalls: activeCategories.length + 1,
+      specialistResults,
+      failClosed: true,
+      failReason: message,
+    });
+
+    return {
+      markdown,
+      hasCritical: true,
+      categories: categoryIds,
+      tokensUsed: totalInput + totalOutput,
+      inputTokens: totalInput,
+      outputTokens: totalOutput,
     };
   }
 
@@ -142,6 +185,7 @@ export async function runReview(
     totalTokens: { input: totalInput, output: totalOutput },
     apiCalls,
     specialistResults,
+    failClosed: false,
   });
 
   return {

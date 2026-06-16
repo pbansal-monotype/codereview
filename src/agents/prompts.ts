@@ -114,6 +114,32 @@ export function buildFileContentsSection(
   return section;
 }
 
+// ─── Shared context (built once, reused by all agents) ────────────
+
+const SPECIALIST_TAIL = `\nNow review the changes above in your specialty area.
+
+Step 1: For each changed function/class/handler, read its FULL implementation from the file contents.
+Step 2: Understand what it does end-to-end — inputs, processing, outputs, error paths.
+Step 3: Evaluate the changed code in that context. Does it introduce a real issue?
+Step 4: Only create findings for genuine problems you can prove with specific code references.
+
+Return JSON.`;
+
+/**
+ * Builds the shared context once — PR metadata, full file contents, and the diff.
+ * Passed to every specialist and to the Judge, so the expensive file-content
+ * assembly runs exactly once per review.
+ */
+export function buildSharedContext(pr: PullRequestData, config: ReviewConfig): string {
+  let prompt = buildPrMetadata(pr, config);
+  const diffSection = `\n## Diff (what changed)\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
+  const budgetForFiles =
+    MAX_PROMPT_CHARS - prompt.length - diffSection.length - SPECIALIST_TAIL.length;
+  prompt += buildFileContentsSection(pr, budgetForFiles);
+  prompt += diffSection;
+  return prompt;
+}
+
 // ─── Specialist prompts ────────────────────────────────────────────
 
 export function buildSpecialistSystemPrompt(
@@ -158,33 +184,9 @@ ${getSpecialistJsonInstruction()}`;
   return prompt;
 }
 
-export function buildSpecialistUserPrompt(
-  pr: PullRequestData,
-  config: ReviewConfig,
-): string {
-  let prompt = buildPrMetadata(pr, config);
-
-  const diffSection = `\n## Diff (what changed)\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
-  const tailInstruction = `\nNow review the changes above in your specialty area.
-
-Step 1: For each changed function/class/handler, read its FULL implementation from the file contents.
-Step 2: Understand what it does end-to-end — inputs, processing, outputs, error paths.
-Step 3: Evaluate the changed code in that context. Does it introduce a real issue?
-Step 4: Only create findings for genuine problems you can prove with specific code references.
-
-Return JSON.`;
-
-  const budgetForFiles =
-    MAX_PROMPT_CHARS -
-    prompt.length -
-    diffSection.length -
-    tailInstruction.length;
-
-  prompt += buildFileContentsSection(pr, budgetForFiles);
-  prompt += diffSection;
-  prompt += tailInstruction;
-
-  return prompt;
+/** Appends the specialist review instruction to the shared context. */
+export function buildSpecialistUserPrompt(sharedContext: string): string {
+  return sharedContext + SPECIALIST_TAIL;
 }
 
 // ─── Judge prompts ─────────────────────────────────────────────────
@@ -227,9 +229,15 @@ ${getJudgeJsonInstruction()}`;
   return prompt;
 }
 
+/**
+ * Builds the judge's prompt.
+ * Receives the pre-built sharedContext (diff + full file contents) so the
+ * judge can verify every finding against real code — not just the diff.
+ */
 export function buildJudgeUserPrompt(
   specialistResults: SpecialistResult[],
   pr: PullRequestData,
+  sharedContext: string,
 ): string {
   let prompt = `## PR: ${pr.title}\n`;
   prompt += `**Author:** ${pr.author} | **Branch:** ${pr.headBranch} → ${pr.baseBranch}\n`;
@@ -239,7 +247,7 @@ export function buildJudgeUserPrompt(
   }
 
   prompt += `\n## Raw Findings from Specialist Reviewers\n`;
-  prompt += `Verify each finding against the diff below. Cross-check with the full context — is the issue real, or did the specialist miss surrounding code that already handles it?\n\n`;
+  prompt += `Verify each finding against the code context below. Cross-check with the full file contents — is the issue real, or did the specialist miss surrounding code that already handles it?\n\n`;
 
   let totalFindings = 0;
   for (const result of specialistResults) {
@@ -277,14 +285,16 @@ export function buildJudgeUserPrompt(
     prompt += `Write a brief positive summary and return an empty findings array.\n`;
   }
 
-  const maxJudgeDiff = 80_000;
-  const diff =
-    pr.diff.length > maxJudgeDiff
-      ? pr.diff.slice(0, maxJudgeDiff) + '\n... [diff truncated for judge review]'
-      : pr.diff;
+  // Pass the full shared context (diff + file contents) so the judge can verify
+  // findings against actual code, not just a truncated diff.
+  const MAX_CONTEXT_FOR_JUDGE = 80_000;
+  const ctx =
+    sharedContext.length > MAX_CONTEXT_FOR_JUDGE
+      ? sharedContext.slice(0, MAX_CONTEXT_FOR_JUDGE) + '\n... [context truncated for judge]'
+      : sharedContext;
 
-  prompt += `\n## Diff (for verification)\n\`\`\`diff\n${diff}\n\`\`\`\n`;
-  prompt += `\nVerify each finding against this diff. Return the final consolidated JSON with only verified, high-quality findings.`;
+  prompt += `\n## Code Context (diff + full files, for verification)\n${ctx}`;
+  prompt += `\nVerify each finding against this context. Return the final consolidated JSON with only verified, high-quality findings.`;
 
   return prompt;
 }

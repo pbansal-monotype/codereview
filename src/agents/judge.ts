@@ -16,11 +16,12 @@ export async function runJudge(
   specialistResults: SpecialistResult[],
   pr: PullRequestData,
   config: ReviewConfig,
+  sharedContext: string,
 ): Promise<JudgeResult> {
   core.info('[judge] Starting quality gate review...');
 
   const systemPrompt = buildJudgeSystemPrompt(config);
-  const userPrompt = buildJudgeUserPrompt(specialistResults, pr);
+  const userPrompt = buildJudgeUserPrompt(specialistResults, pr, sharedContext);
 
   const response = await provider.review({
     systemPrompt,

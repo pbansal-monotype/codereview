@@ -16,6 +16,7 @@ export async function runSpecialistAgent(
   guidelines: CategoryGuidelines,
   pr: PullRequestData,
   config: ReviewConfig,
+  sharedContext: string,
 ): Promise<SpecialistResult> {
   const label = CATEGORY_LABELS[categoryId] || categoryId;
 
@@ -27,7 +28,7 @@ export async function runSpecialistAgent(
       guidelines.guidelines,
       config,
     );
-    const userPrompt = buildSpecialistUserPrompt(pr, config);
+    const userPrompt = buildSpecialistUserPrompt(sharedContext);
 
     const response = await provider.review({
       systemPrompt,

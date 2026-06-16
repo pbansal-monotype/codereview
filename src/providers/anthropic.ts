@@ -18,6 +18,7 @@ export class AnthropicProvider implements AIProvider {
         this.client.messages.create({
           model: this.model,
           max_tokens: 8192,
+          temperature: 0,
           system: request.systemPrompt,
           messages: [{ role: 'user', content: request.userPrompt }],
         }),

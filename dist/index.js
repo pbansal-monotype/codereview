@@ -35649,12 +35649,21 @@ const findings_1 = __nccwpck_require__(1001);
 const cost_1 = __nccwpck_require__(8666);
 const prompts_1 = __nccwpck_require__(2413);
 function formatReviewMarkdown(opts) {
-    const { structured, pr, config, categories, totalTokens, apiCalls } = opts;
+    const { structured, pr, config, categories, totalTokens, apiCalls, failClosed, failReason } = opts;
     let md = `# 🤖 AI PR Review\n\n`;
     md += `**PR:** #${pr.number} — ${pr.title}\n`;
     md += `**Provider:** ${config.provider} (${config.model})\n`;
     md += `**Mode:** Multi-agent (${apiCalls - 1} specialists + judge)\n`;
     md += `**Files reviewed:** ${pr.reviewedFiles.length} / ${pr.changedFiles.length} changed\n`;
+    if (failClosed) {
+        md += `\n> **Merge blocked — judge agent failed and the pipeline is fail-closed.**\n`;
+        if (failReason) {
+            md += `> Error: \`${failReason}\`\n`;
+        }
+        md += `> Please review this PR manually or re-run the workflow.\n`;
+        md += `\n---\n`;
+        return md;
+    }
     if (pr.redactionCount > 0) {
         md += `**Secrets redacted:** ${pr.redactionCount} value(s) removed before AI review\n`;
     }
@@ -36028,10 +36037,10 @@ exports.runJudge = runJudge;
 const core = __importStar(__nccwpck_require__(7484));
 const findings_1 = __nccwpck_require__(1001);
 const prompts_1 = __nccwpck_require__(2413);
-async function runJudge(provider, specialistResults, pr, config) {
+async function runJudge(provider, specialistResults, pr, config, sharedContext) {
     core.info('[judge] Starting quality gate review...');
     const systemPrompt = (0, prompts_1.buildJudgeSystemPrompt)(config);
-    const userPrompt = (0, prompts_1.buildJudgeUserPrompt)(specialistResults, pr);
+    const userPrompt = (0, prompts_1.buildJudgeUserPrompt)(specialistResults, pr, sharedContext);
     const response = await provider.review({
         systemPrompt,
         userPrompt,
@@ -36139,8 +36148,27 @@ async function runReview(provider, config, pr) {
     }
     const categoryIds = activeCategories.map((c) => c.id);
     core.info(`Fan-out to ${activeCategories.length} specialists: ${categoryIds.map((id) => prompts_1.CATEGORY_LABELS[id] || id).join(', ')}`);
-    // Stage 1: Fan out to all specialist agents in parallel
-    const specialistResults = await Promise.all(activeCategories.map((cat) => (0, specialist_1.runSpecialistAgent)(provider, cat.id, cat.guidelines, pr, config)));
+    // Build shared context once — PR metadata + full file contents + diff.
+    // All specialists and the Judge receive the same pre-built context so the
+    // expensive file-assembly step runs exactly once per review.
+    const sharedContext = (0, prompts_1.buildSharedContext)(pr, config);
+    // Stage 1: Fan out to all specialist agents in parallel via allSettled so
+    // a single crashed specialist never aborts the rest of the pipeline.
+    const settled = await Promise.allSettled(activeCategories.map((cat) => (0, specialist_1.runSpecialistAgent)(provider, cat.id, cat.guidelines, pr, config, sharedContext)));
+    const specialistResults = settled.map((result, i) => {
+        if (result.status === 'fulfilled')
+            return result.value;
+        const cat = activeCategories[i];
+        const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        core.warning(`[${cat.id}] Specialist crashed (unhandled): ${message}`);
+        return {
+            categoryId: cat.id,
+            findings: [],
+            tokens: { input: 0, output: 0 },
+            failed: true,
+            error: message,
+        };
+    });
     const totalSpecialistFindings = specialistResults.reduce((sum, r) => sum + r.findings.length, 0);
     const failedCount = specialistResults.filter((r) => r.failed).length;
     core.info(`Specialists complete: ${totalSpecialistFindings} raw finding(s), ${failedCount} failed agent(s)`);
@@ -36158,21 +36186,41 @@ async function runReview(provider, config, pr) {
             core.info(`[${result.categoryId}] ${f.severity.toUpperCase()} ${f.file}:${f.line} — ${f.message}`);
         }
     }
-    // Stage 2: Run judge agent to verify, deduplicate, and rate findings
+    // Stage 2: Judge — verify, deduplicate, recalibrate, cap the final list.
+    // Receives the same sharedContext (diff + full files) so it can check every
+    // finding against real code, not just a truncated diff.
+    // Fail-closed: if the judge itself crashes we block the PR rather than
+    // silently shipping unverified findings.
     let judgeTokens = { input: 0, output: 0 };
     let structured;
     try {
-        const judgeResult = await (0, judge_1.runJudge)(provider, specialistResults, pr, config);
+        const judgeResult = await (0, judge_1.runJudge)(provider, specialistResults, pr, config, sharedContext);
         structured = judgeResult.structured;
         judgeTokens = judgeResult.tokens;
     }
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        core.warning(`[judge] Judge failed: ${message} — falling back to raw specialist findings`);
-        const allFindings = specialistResults.flatMap((r) => r.findings);
-        structured = {
-            summary: 'Judge unavailable. Showing unfiltered specialist findings.',
-            findings: allFindings,
+        core.error(`[judge] Judge failed: ${message} — failing closed (blocking PR)`);
+        const totalInput = specialistResults.reduce((s, r) => s + r.tokens.input, 0);
+        const totalOutput = specialistResults.reduce((s, r) => s + r.tokens.output, 0);
+        const markdown = (0, format_1.formatReviewMarkdown)({
+            structured: undefined,
+            pr,
+            config,
+            categories: categoryIds,
+            totalTokens: { input: totalInput, output: totalOutput },
+            apiCalls: activeCategories.length + 1,
+            specialistResults,
+            failClosed: true,
+            failReason: message,
+        });
+        return {
+            markdown,
+            hasCritical: true,
+            categories: categoryIds,
+            tokensUsed: totalInput + totalOutput,
+            inputTokens: totalInput,
+            outputTokens: totalOutput,
         };
     }
     core.info(`[judge] Final approved findings: ${structured.findings.length}`);
@@ -36193,6 +36241,7 @@ async function runReview(provider, config, pr) {
         totalTokens: { input: totalInput, output: totalOutput },
         apiCalls,
         specialistResults,
+        failClosed: false,
     });
     return {
         markdown,
@@ -36250,6 +36299,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.CATEGORY_LABELS = void 0;
 exports.buildPrMetadata = buildPrMetadata;
 exports.buildFileContentsSection = buildFileContentsSection;
+exports.buildSharedContext = buildSharedContext;
 exports.buildSpecialistSystemPrompt = buildSpecialistSystemPrompt;
 exports.buildSpecialistUserPrompt = buildSpecialistUserPrompt;
 exports.buildJudgeSystemPrompt = buildJudgeSystemPrompt;
@@ -36335,6 +36385,28 @@ function buildFileContentsSection(pr, budget) {
     }
     return section;
 }
+// ─── Shared context (built once, reused by all agents) ────────────
+const SPECIALIST_TAIL = `\nNow review the changes above in your specialty area.
+
+Step 1: For each changed function/class/handler, read its FULL implementation from the file contents.
+Step 2: Understand what it does end-to-end — inputs, processing, outputs, error paths.
+Step 3: Evaluate the changed code in that context. Does it introduce a real issue?
+Step 4: Only create findings for genuine problems you can prove with specific code references.
+
+Return JSON.`;
+/**
+ * Builds the shared context once — PR metadata, full file contents, and the diff.
+ * Passed to every specialist and to the Judge, so the expensive file-content
+ * assembly runs exactly once per review.
+ */
+function buildSharedContext(pr, config) {
+    let prompt = buildPrMetadata(pr, config);
+    const diffSection = `\n## Diff (what changed)\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
+    const budgetForFiles = config_1.MAX_PROMPT_CHARS - prompt.length - diffSection.length - SPECIALIST_TAIL.length;
+    prompt += buildFileContentsSection(pr, budgetForFiles);
+    prompt += diffSection;
+    return prompt;
+}
 // ─── Specialist prompts ────────────────────────────────────────────
 function buildSpecialistSystemPrompt(categoryId, guidelines, config) {
     const role = SPECIALIST_ROLES[categoryId] || SPECIALIST_ROLES.custom;
@@ -36370,25 +36442,9 @@ ${(0, config_1.getSpecialistJsonInstruction)()}`;
     }
     return prompt;
 }
-function buildSpecialistUserPrompt(pr, config) {
-    let prompt = buildPrMetadata(pr, config);
-    const diffSection = `\n## Diff (what changed)\n\`\`\`diff\n${pr.diff}\n\`\`\`\n`;
-    const tailInstruction = `\nNow review the changes above in your specialty area.
-
-Step 1: For each changed function/class/handler, read its FULL implementation from the file contents.
-Step 2: Understand what it does end-to-end — inputs, processing, outputs, error paths.
-Step 3: Evaluate the changed code in that context. Does it introduce a real issue?
-Step 4: Only create findings for genuine problems you can prove with specific code references.
-
-Return JSON.`;
-    const budgetForFiles = config_1.MAX_PROMPT_CHARS -
-        prompt.length -
-        diffSection.length -
-        tailInstruction.length;
-    prompt += buildFileContentsSection(pr, budgetForFiles);
-    prompt += diffSection;
-    prompt += tailInstruction;
-    return prompt;
+/** Appends the specialist review instruction to the shared context. */
+function buildSpecialistUserPrompt(sharedContext) {
+    return sharedContext + SPECIALIST_TAIL;
 }
 // ─── Judge prompts ─────────────────────────────────────────────────
 function buildJudgeSystemPrompt(config) {
@@ -36426,14 +36482,19 @@ ${(0, config_1.getJudgeJsonInstruction)()}`;
     }
     return prompt;
 }
-function buildJudgeUserPrompt(specialistResults, pr) {
+/**
+ * Builds the judge's prompt.
+ * Receives the pre-built sharedContext (diff + full file contents) so the
+ * judge can verify every finding against real code — not just the diff.
+ */
+function buildJudgeUserPrompt(specialistResults, pr, sharedContext) {
     let prompt = `## PR: ${pr.title}\n`;
     prompt += `**Author:** ${pr.author} | **Branch:** ${pr.headBranch} → ${pr.baseBranch}\n`;
     if (pr.body) {
         prompt += `\n### PR Description\n${pr.body}\n`;
     }
     prompt += `\n## Raw Findings from Specialist Reviewers\n`;
-    prompt += `Verify each finding against the diff below. Cross-check with the full context — is the issue real, or did the specialist miss surrounding code that already handles it?\n\n`;
+    prompt += `Verify each finding against the code context below. Cross-check with the full file contents — is the issue real, or did the specialist miss surrounding code that already handles it?\n\n`;
     let totalFindings = 0;
     for (const result of specialistResults) {
         const label = exports.CATEGORY_LABELS[result.categoryId] || result.categoryId;
@@ -36461,12 +36522,14 @@ function buildJudgeUserPrompt(specialistResults, pr) {
         prompt += `\n**All specialists reported clean — no issues found.**\n`;
         prompt += `Write a brief positive summary and return an empty findings array.\n`;
     }
-    const maxJudgeDiff = 80_000;
-    const diff = pr.diff.length > maxJudgeDiff
-        ? pr.diff.slice(0, maxJudgeDiff) + '\n... [diff truncated for judge review]'
-        : pr.diff;
-    prompt += `\n## Diff (for verification)\n\`\`\`diff\n${diff}\n\`\`\`\n`;
-    prompt += `\nVerify each finding against this diff. Return the final consolidated JSON with only verified, high-quality findings.`;
+    // Pass the full shared context (diff + file contents) so the judge can verify
+    // findings against actual code, not just a truncated diff.
+    const MAX_CONTEXT_FOR_JUDGE = 80_000;
+    const ctx = sharedContext.length > MAX_CONTEXT_FOR_JUDGE
+        ? sharedContext.slice(0, MAX_CONTEXT_FOR_JUDGE) + '\n... [context truncated for judge]'
+        : sharedContext;
+    prompt += `\n## Code Context (diff + full files, for verification)\n${ctx}`;
+    prompt += `\nVerify each finding against this context. Return the final consolidated JSON with only verified, high-quality findings.`;
     return prompt;
 }
 
@@ -36516,12 +36579,12 @@ exports.runSpecialistAgent = runSpecialistAgent;
 const core = __importStar(__nccwpck_require__(7484));
 const findings_1 = __nccwpck_require__(1001);
 const prompts_1 = __nccwpck_require__(2413);
-async function runSpecialistAgent(provider, categoryId, guidelines, pr, config) {
+async function runSpecialistAgent(provider, categoryId, guidelines, pr, config, sharedContext) {
     const label = prompts_1.CATEGORY_LABELS[categoryId] || categoryId;
     try {
         core.info(`[${categoryId}] Specialist starting...`);
         const systemPrompt = (0, prompts_1.buildSpecialistSystemPrompt)(categoryId, guidelines.guidelines, config);
-        const userPrompt = (0, prompts_1.buildSpecialistUserPrompt)(pr, config);
+        const userPrompt = (0, prompts_1.buildSpecialistUserPrompt)(sharedContext);
         const response = await provider.review({
             systemPrompt,
             userPrompt,
@@ -37767,6 +37830,7 @@ class AnthropicProvider {
         const response = await (0, retry_1.withRetry)(() => this.client.messages.create({
             model: this.model,
             max_tokens: 8192,
+            temperature: 0,
             system: request.systemPrompt,
             messages: [{ role: 'user', content: request.userPrompt }],
         }), { timeoutMs: request.timeoutMs });
@@ -37844,6 +37908,7 @@ class OpenAIProvider {
         const response = await (0, retry_1.withRetry)(() => this.client.chat.completions.create({
             model: this.model,
             max_tokens: 8192,
+            temperature: 0,
             response_format: { type: 'json_object' },
             messages: [
                 { role: 'system', content: request.systemPrompt },

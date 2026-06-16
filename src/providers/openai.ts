@@ -18,6 +18,7 @@ export class OpenAIProvider implements AIProvider {
         this.client.chat.completions.create({
           model: this.model,
           max_tokens: 8192,
+          temperature: 0,
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: request.systemPrompt },
