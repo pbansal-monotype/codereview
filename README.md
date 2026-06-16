@@ -167,13 +167,50 @@ PR opened/updated
 | `include_file_contents` | No | `true` | Send full file contents alongside diff for better context |
 | `context_files` | No | — | Extra files to always include (e.g. `src/types.ts,src/db/schema.prisma`) |
 | `max_file_size` | No | `10000` | Max characters per file when including contents |
-| `config_path` | No | `.github/pr-review-config.yml` | Path to optional config file (see below) |
 
 > **`custom_prompt` vs `extra_instructions`**
 >
 > `custom_prompt` is **repo-specific context** — "This is a Django app using PostgreSQL with Celery workers."
 >
 > `extra_instructions` is **company-wide policy** — "Be concise. Follow coding standards at wiki.internal/standards."
+
+### Input resolution order
+
+Every input follows the same priority chain:
+
+| Priority | Source | Who sets it |
+|----------|--------|-------------|
+| 1 (highest) | Action input (`with:`) | Per-repo workflow |
+| 2 | Environment variable | Org or repo-level GitHub variable |
+| 3 (lowest) | Built-in default | Action code |
+
+**Org-wide setup:** Set org-level GitHub variables in your GitHub org settings (Settings > Variables). These are inherited by all repos automatically — no extra config files needed. Individual repos can override with repo-level variables or action inputs.
+
+**Env var mapping:**
+
+| Action Input | Env Var |
+|--------------|---------|
+| `provider` | `REVIEW_PROVIDER` |
+| `model` | `REVIEW_MODEL` |
+| `review_categories` | `REVIEW_CATEGORIES` |
+| `security_guidelines` | `SECURITY_GUIDELINES` |
+| `test_guidelines` | `TEST_GUIDELINES` |
+| `performance_guidelines` | `PERFORMANCE_GUIDELINES` |
+| `cost_guidelines` | `COST_GUIDELINES` |
+| `custom_prompt` | `CUSTOM_PROMPT` |
+| `extra_instructions` | `EXTRA_INSTRUCTIONS` |
+| `max_diff_size` | `MAX_DIFF_SIZE` |
+| `post_review_comment` | `POST_REVIEW_COMMENT` |
+| `post_inline_comments` | `POST_INLINE_COMMENTS` |
+| `fail_on_critical` | `FAIL_ON_CRITICAL` |
+| `ignore_paths` | `IGNORE_PATHS` |
+| `redact_secrets` | `REDACT_SECRETS` |
+| `timeout` | `REVIEW_TIMEOUT` |
+| `include_file_contents` | `INCLUDE_FILE_CONTENTS` |
+| `context_files` | `CONTEXT_FILES` |
+| `max_file_size` | `MAX_FILE_SIZE` |
+
+`api_key` and `github_token` use their own env vars (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY` and `GITHUB_TOKEN`).
 
 ## Outputs
 
@@ -256,34 +293,6 @@ PR opened/updated
     include_file_contents: 'false'
 ```
 
-## Optional: external config file
-
-If your guidelines are long or shared across many repos, you can extract them to a separate file. Create `.github/pr-review-config.yml`:
-
-```yaml
-provider: anthropic
-review_categories: security,tests,performance,cost
-fail_on_critical: true
-
-extra_instructions: |
-  You are reviewing code for Acme Corp.
-  Be constructive and specific.
-
-guidelines:
-  security: |
-    Check for SQL injection, XSS, hardcoded secrets...
-  tests: |
-    New code must have unit tests with >80% coverage...
-  performance: |
-    No N+1 queries, use pagination for lists...
-  cost: |
-    Tag all cloud resources, check log volume...
-```
-
-The action auto-loads this file if it exists. Action inputs override config file values when both are set.
-
-See [`pr-review-config.example.yml`](./pr-review-config.example.yml) for a complete example.
-
 ## Fork-based PRs
 
 If your repository receives PRs from forks, the `pull_request` trigger cannot access secrets. Use `pull_request_target` instead:
@@ -301,7 +310,7 @@ on:
 ```
 src/
 ├── index.ts              Entry point — orchestration, error handling
-├── config.ts             Config loading from file + action inputs
+├── config.ts             Config loading from action inputs
 ├── review.ts             Prompt construction, response formatting
 ├── github.ts             GitHub API — diff fetching, comments, inline reviews
 ├── findings.ts           Structured JSON parsing and validation

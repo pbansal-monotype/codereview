@@ -27,33 +27,28 @@ inputs:
     required: false
     default: ${{ github.token }}
 
-  config_path:
-    description: 'Path to the review configuration YAML file (relative to repo root)'
-    required: false
-    default: '.github/pr-review-config.yml'
-
   review_categories:
     description: 'Comma-separated list of categories to review: security,tests,performance,cost,custom'
     required: false
     default: 'security,tests,performance,cost'
 
   security_guidelines:
-    description: 'Custom security review guidelines (overrides config file)'
+    description: 'Custom security review guidelines'
     required: false
     default: ''
 
   test_guidelines:
-    description: 'Custom test case review guidelines (overrides config file)'
+    description: 'Custom test case review guidelines'
     required: false
     default: ''
 
   performance_guidelines:
-    description: 'Custom performance review guidelines (overrides config file)'
+    description: 'Custom performance review guidelines'
     required: false
     default: ''
 
   cost_guidelines:
-    description: 'Custom cost/billing review guidelines (overrides config file)'
+    description: 'Custom cost/billing review guidelines'
     required: false
     default: ''
 

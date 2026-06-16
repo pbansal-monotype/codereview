@@ -1,12 +1,80 @@
-name: CI
+name: CI & AI PR Review
 
 on:
-  push:
-    branches: [main, master]
   pull_request:
+    types: [opened, synchronize, reopened]
+
+  workflow_call:
+    inputs:
+      provider:
+        description: 'AI provider: anthropic or openai'
+        type: string
+        default: 'anthropic'
+      model:
+        description: 'Model override'
+        type: string
+        default: ''
+      review_categories:
+        description: 'Comma-separated categories to review'
+        type: string
+        default: 'security,tests,performance,cost'
+      fail_on_critical:
+        description: 'Fail CI on critical findings'
+        type: string
+        default: 'false'
+      custom_prompt:
+        description: 'Repo-specific context'
+        type: string
+        default: ''
+      extra_instructions:
+        description: 'Company-wide policies'
+        type: string
+        default: ''
+      security_guidelines:
+        description: 'Custom security guidelines'
+        type: string
+        default: ''
+      test_guidelines:
+        description: 'Custom test guidelines'
+        type: string
+        default: ''
+      performance_guidelines:
+        description: 'Custom performance guidelines'
+        type: string
+        default: ''
+      cost_guidelines:
+        description: 'Custom cost guidelines'
+        type: string
+        default: ''
+      post_inline_comments:
+        description: 'Post inline comments on diff lines'
+        type: string
+        default: 'true'
+      ignore_paths:
+        description: 'Glob patterns to skip'
+        type: string
+        default: ''
+      context_files:
+        description: 'Files to always include for context'
+        type: string
+        default: ''
+    secrets:
+      api_key:
+        description: 'Override API key (if not set, uses centralized key from this repo)'
+        required: false
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   build-and-test:
+    # Only run for direct push/PR in this repo, not when called as a reusable workflow
+    if: ${{ inputs.provider == '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,3 +94,35 @@ jobs:
 
       - name: Verify dist bundle exists
         run: test -f dist/index.js
+
+  review:
+    name: AI Review
+    # Run on PRs (direct or via workflow_call), skip on push-to-main
+    if: ${{ github.event_name == 'pull_request' || inputs.provider != '' }}
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.api_key || secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.api_key || secrets.OPENAI_API_KEY }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run AI PR Review
+        uses: pbansal-monotype/codereview@main
+        with:
+          github_token: ${{ github.token }}
+          api_key: ${{ secrets.api_key || secrets.OPENAI_API_KEY || secrets.ANTHROPIC_API_KEY }}
+          provider: ${{ inputs.provider || 'anthropic' }}
+          model: ${{ inputs.model || '' }}
+          review_categories: ${{ inputs.review_categories || 'security,tests,performance,cost' }}
+          fail_on_critical: ${{ inputs.fail_on_critical || 'false' }}
+          custom_prompt: ${{ inputs.custom_prompt || '' }}
+          extra_instructions: ${{ inputs.extra_instructions || '' }}
+          security_guidelines: ${{ inputs.security_guidelines || '' }}
+          test_guidelines: ${{ inputs.test_guidelines || '' }}
+          performance_guidelines: ${{ inputs.performance_guidelines || '' }}
+          cost_guidelines: ${{ inputs.cost_guidelines || '' }}
+          post_inline_comments: ${{ inputs.post_inline_comments || 'true' }}
+          ignore_paths: ${{ inputs.ignore_paths || '' }}
+          context_files: ${{ inputs.context_files || '' }}

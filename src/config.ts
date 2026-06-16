@@ -1,7 +1,4 @@
 import * as core from '@actions/core';
-import * as fs from 'fs';
-import * as path from 'path';
-import { parse as parseYaml } from 'yaml';
 import { parseIgnorePatterns } from './ignore';
 
 export interface CategoryGuidelines {
@@ -97,27 +94,37 @@ You MUST respond with valid JSON only (no markdown fences). Schema:
 }
 If no issues for a category, omit findings for that category. Use severity "critical" only for issues that must block merge. Always include "file" and "line" when possible.`;
 
-function loadConfigFile(configPath: string): Record<string, unknown> {
-  const fullPath = path.resolve(process.cwd(), configPath);
-  if (!fs.existsSync(fullPath)) {
-    core.info(`No config file found at ${fullPath}, using action inputs and defaults`);
-    return {};
-  }
-
-  const content = fs.readFileSync(fullPath, 'utf-8');
-  const parsed = parseYaml(content) as Record<string, unknown>;
-  core.info(`Loaded review config from ${fullPath}`);
-  return parsed ?? {};
-}
-
-function str(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
-
-function bool(value: unknown, fallback: boolean): boolean {
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'string') return value === 'true';
+function bool(value: string, fallback: boolean): boolean {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
   return fallback;
+}
+
+const ENV_VAR_NAMES: Record<string, string> = {
+  provider: 'REVIEW_PROVIDER',
+  model: 'REVIEW_MODEL',
+  review_categories: 'REVIEW_CATEGORIES',
+  custom_prompt: 'CUSTOM_PROMPT',
+  extra_instructions: 'EXTRA_INSTRUCTIONS',
+  security: 'SECURITY_GUIDELINES',
+  tests: 'TEST_GUIDELINES',
+  performance: 'PERFORMANCE_GUIDELINES',
+  cost: 'COST_GUIDELINES',
+  max_diff_size: 'MAX_DIFF_SIZE',
+  post_review_comment: 'POST_REVIEW_COMMENT',
+  post_inline_comments: 'POST_INLINE_COMMENTS',
+  fail_on_critical: 'FAIL_ON_CRITICAL',
+  ignore_paths: 'IGNORE_PATHS',
+  redact_secrets: 'REDACT_SECRETS',
+  timeout: 'REVIEW_TIMEOUT',
+  include_file_contents: 'INCLUDE_FILE_CONTENTS',
+  context_files: 'CONTEXT_FILES',
+  max_file_size: 'MAX_FILE_SIZE',
+};
+
+// Action input -> env var -> fallback
+function resolve(inputName: string, fallback = ''): string {
+  return core.getInput(inputName) || process.env[ENV_VAR_NAMES[inputName]] || fallback;
 }
 
 const SECRET_NAMES: Record<string, string> = {
@@ -139,58 +146,36 @@ function resolveApiKey(provider: 'anthropic' | 'openai'): string {
 }
 
 export function loadConfig(): ReviewConfig {
-  const configPath = core.getInput('config_path');
-  const fileConfig = loadConfigFile(configPath);
-
-  const provider = (core.getInput('provider') ||
-    str(fileConfig.provider) ||
-    'anthropic') as 'anthropic' | 'openai';
+  const provider = (resolve('provider', 'anthropic')) as 'anthropic' | 'openai';
 
   if (provider !== 'anthropic' && provider !== 'openai') {
     throw new Error(`Invalid provider "${provider}". Use "anthropic" or "openai".`);
   }
 
-  const model =
-    core.getInput('model') || str(fileConfig.model) || DEFAULT_MODELS[provider];
+  const model = resolve('model') || DEFAULT_MODELS[provider];
 
-  const enabledCategories = (
-    core.getInput('review_categories') ||
-    str(fileConfig.review_categories) ||
-    'security,tests,performance,cost'
-  )
+  const enabledCategories = (resolve('review_categories', 'security,tests,performance,cost'))
     .split(',')
     .map((c) => c.trim().toLowerCase())
     .filter(Boolean);
 
-  const guidelinesFromFile = (fileConfig.guidelines ?? {}) as Record<string, string>;
-
   function resolveGuidelines(category: string): CategoryGuidelines {
-    const inputKey = `${category}_guidelines`;
-    const actionInput = core.getInput(inputKey);
-    const fileGuideline = guidelinesFromFile[category];
+    const actionInput = core.getInput(`${category}_guidelines`);
+    const fromEnv = process.env[ENV_VAR_NAMES[category]];
 
     return {
       enabled: enabledCategories.includes(category),
-      guidelines: actionInput || fileGuideline || DEFAULT_GUIDELINES[category] || '',
+      guidelines: actionInput || fromEnv || DEFAULT_GUIDELINES[category] || '',
     };
   }
 
-  const ignoreInput =
-    core.getInput('ignore_paths') || str(fileConfig.ignore_paths);
-
-  const timeoutSec = parseInt(
-    core.getInput('timeout') || str(fileConfig.timeout) || '120',
-    10,
-  );
-
   const apiKey = resolveApiKey(provider);
-  const githubToken =
-    core.getInput('github_token') ||
-    process.env.GITHUB_TOKEN ||
-    '';
+  const githubToken = core.getInput('github_token') || process.env.GITHUB_TOKEN || '';
   if (!githubToken) {
     throw new Error('No github_token provided and GITHUB_TOKEN env var is not set.');
   }
+
+  const timeoutSec = parseInt(resolve('timeout', '120'), 10);
 
   return {
     provider,
@@ -204,49 +189,24 @@ export function loadConfig(): ReviewConfig {
       cost: resolveGuidelines('cost'),
       custom: {
         enabled: enabledCategories.includes('custom'),
-        guidelines:
-          core.getInput('custom_prompt') || guidelinesFromFile.custom || '',
+        guidelines: resolve('custom_prompt'),
       },
     },
-    customPrompt: core.getInput('custom_prompt') || str(fileConfig.custom_prompt),
-    extraInstructions:
-      core.getInput('extra_instructions') || str(fileConfig.extra_instructions),
-    maxDiffSize: parseInt(
-      core.getInput('max_diff_size') || str(fileConfig.max_diff_size) || '60000',
-      10,
-    ),
-    postReviewComment: bool(
-      core.getInput('post_review_comment') || fileConfig.post_review_comment,
-      true,
-    ),
-    postInlineComments: bool(
-      core.getInput('post_inline_comments') || fileConfig.post_inline_comments,
-      true,
-    ),
-    failOnCritical: bool(
-      core.getInput('fail_on_critical') || fileConfig.fail_on_critical,
-      false,
-    ),
-    ignorePatterns: parseIgnorePatterns(ignoreInput),
-    redactSecrets: bool(
-      core.getInput('redact_secrets') || fileConfig.redact_secrets,
-      true,
-    ),
+    customPrompt: resolve('custom_prompt'),
+    extraInstructions: resolve('extra_instructions'),
+    maxDiffSize: parseInt(resolve('max_diff_size', '60000'), 10),
+    postReviewComment: bool(resolve('post_review_comment'), true),
+    postInlineComments: bool(resolve('post_inline_comments'), true),
+    failOnCritical: bool(resolve('fail_on_critical'), false),
+    ignorePatterns: parseIgnorePatterns(resolve('ignore_paths')),
+    redactSecrets: bool(resolve('redact_secrets'), true),
     timeoutMs: timeoutSec * 1000,
-    includeFileContents: bool(
-      core.getInput('include_file_contents') || fileConfig.include_file_contents,
-      true,
-    ),
-    contextFiles: (
-      core.getInput('context_files') || str(fileConfig.context_files)
-    )
+    includeFileContents: bool(resolve('include_file_contents'), true),
+    contextFiles: resolve('context_files')
       .split(',')
       .map((f) => f.trim())
       .filter(Boolean),
-    maxFileSize: parseInt(
-      core.getInput('max_file_size') || str(fileConfig.max_file_size) || '10000',
-      10,
-    ),
+    maxFileSize: parseInt(resolve('max_file_size', '10000'), 10),
   };
 }
 
