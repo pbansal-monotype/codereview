@@ -34,8 +34,22 @@ const VAGUE_PATTERNS = [
   /\bmight cause\b.*\bproblems\b/i,
 ];
 
+function stripBrackets(text: string): string {
+  return text.replace(/^\[|\]$/g, '').trim();
+}
+
+function normalizeMessage(message: string): string {
+  return message
+    .replace(/\[([^\]]+)\]/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 function isVagueFinding(message: string): boolean {
-  return VAGUE_PATTERNS.some((pattern) => pattern.test(message.trim()));
+  const parts = message.split('→').map((p) => stripBrackets(p.trim()));
+  return parts.some((part) =>
+    VAGUE_PATTERNS.some((pattern) => pattern.test(part)),
+  );
 }
 
 export function parseStructuredReview(raw: string): StructuredReview {
@@ -70,7 +84,7 @@ export function parseStructuredReview(raw: string): StructuredReview {
         confidence,
         file: f.file,
         line: typeof f.line === 'number' ? f.line : undefined,
-        message: f.message,
+        message: normalizeMessage(f.message),
       });
     }
   }
@@ -118,7 +132,7 @@ export function parseSpecialistFindings(raw: string, categoryId: string): Findin
       confidence,
       file: f.file,
       line: typeof f.line === 'number' ? f.line : undefined,
-      message: f.message as string,
+      message: normalizeMessage(f.message as string),
     });
   }
 
