@@ -75,6 +75,23 @@ export async function runReview(
     `Specialists complete: ${totalSpecialistFindings} raw finding(s), ${failedCount} failed agent(s)`,
   );
 
+  for (const result of specialistResults) {
+    const label = CATEGORY_LABELS[result.categoryId] || result.categoryId;
+    if (result.failed) {
+      core.info(`[${result.categoryId}] ${label}: FAILED — ${result.error}`);
+      continue;
+    }
+    if (result.findings.length === 0) {
+      core.info(`[${result.categoryId}] ${label}: No issues found ✓`);
+      continue;
+    }
+    for (const f of result.findings) {
+      core.info(
+        `[${result.categoryId}] ${f.severity.toUpperCase()} ${f.file}:${f.line} — ${f.message}`,
+      );
+    }
+  }
+
   // Stage 2: Run judge agent to verify, deduplicate, and rate findings
   let judgeTokens = { input: 0, output: 0 };
   let structured;
@@ -98,6 +115,13 @@ export async function runReview(
       summary: 'Judge unavailable. Showing unfiltered specialist findings.',
       findings: allFindings,
     };
+  }
+
+  core.info(`[judge] Final approved findings: ${structured.findings.length}`);
+  for (const f of structured.findings) {
+    core.info(
+      `[judge] ✅ ${f.severity.toUpperCase()} ${f.file}:${f.line} — ${f.message}`,
+    );
   }
 
   const hasCritical = hasCriticalFindings(structured);

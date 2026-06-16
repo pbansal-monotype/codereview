@@ -504,15 +504,41 @@ export async function postInlineReview(
       comments: newComments.map((c) => ({
         path: c.path,
         line: c.line,
+        side: 'RIGHT' as const,
         body: c.body,
       })),
     });
     core.info(`Posted ${newComments.length} inline review comment(s) (${comments.length - newComments.length} duplicates skipped)`);
     return { posted: newComments.length, skipped };
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    core.warning(`Failed to post inline review (falling back to summary): ${msg}`);
-    return { posted: 0, skipped: skipped + newComments.length };
+  } catch (batchErr: unknown) {
+    const batchMsg = batchErr instanceof Error ? batchErr.message : String(batchErr);
+    core.warning(`Batch inline review failed (${batchMsg}). Falling back to individual comments.`);
+
+    const { data: prData } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
+    const commitId = prData.head.sha;
+
+    let posted = 0;
+    for (const c of newComments) {
+      try {
+        await octokit.rest.pulls.createReviewComment({
+          owner,
+          repo,
+          pull_number: prNumber,
+          path: c.path,
+          line: c.line,
+          side: 'RIGHT',
+          body: c.body,
+          commit_id: commitId,
+        });
+        posted++;
+      } catch {
+        skipped++;
+        core.debug(`Skipped inline comment on ${c.path}:${c.line} (line not in diff)`);
+      }
+    }
+
+    core.info(`Posted ${posted} inline comment(s) individually (${skipped} skipped)`);
+    return { posted, skipped };
   }
 }
 
