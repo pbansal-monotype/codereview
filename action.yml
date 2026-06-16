@@ -28,9 +28,9 @@ inputs:
     default: ${{ github.token }}
 
   review_categories:
-    description: 'Comma-separated list of categories to review: security,tests,performance,cost,custom'
+    description: 'Comma-separated list of categories to review: security,tests,performance,code,custom'
     required: false
-    default: 'security,tests,performance,cost'
+    default: 'security,tests,performance,code'
 
   security_guidelines:
     description: 'Custom security review guidelines'
@@ -47,8 +47,8 @@ inputs:
     required: false
     default: ''
 
-  cost_guidelines:
-    description: 'Custom cost/billing review guidelines'
+  code_guidelines:
+    description: 'Custom code quality review guidelines (error handling, correctness, patterns)'
     required: false
     default: ''
 

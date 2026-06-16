@@ -16,7 +16,7 @@ export interface ReviewConfig {
     security: CategoryGuidelines;
     tests: CategoryGuidelines;
     performance: CategoryGuidelines;
-    cost: CategoryGuidelines;
+    code: CategoryGuidelines;
     custom: CategoryGuidelines;
   };
   customPrompt: string;
@@ -107,7 +107,7 @@ const ENV_VAR_NAMES: Record<string, string> = {
   security: 'SECURITY_GUIDELINES',
   tests: 'TEST_GUIDELINES',
   performance: 'PERFORMANCE_GUIDELINES',
-  cost: 'COST_GUIDELINES',
+  code: 'CODE_GUIDELINES',
   max_diff_size: 'MAX_DIFF_SIZE',
   post_review_comment: 'POST_REVIEW_COMMENT',
   post_inline_comments: 'POST_INLINE_COMMENTS',
@@ -152,7 +152,7 @@ export function loadConfig(): ReviewConfig {
 
   const model = resolve('model') || DEFAULT_MODELS[provider];
 
-  const enabledCategories = resolve('review_categories', 'security,tests,performance,cost')
+  const enabledCategories = resolve('review_categories', 'security,tests,performance,code')
     .split(',')
     .map((c) => c.trim().toLowerCase())
     .filter(Boolean);
@@ -184,7 +184,7 @@ export function loadConfig(): ReviewConfig {
       security: resolveGuidelines('security'),
       tests: resolveGuidelines('tests'),
       performance: resolveGuidelines('performance'),
-      cost: resolveGuidelines('cost'),
+      code: resolveGuidelines('code'),
       custom: {
         enabled: enabledCategories.includes('custom'),
         guidelines: resolve('custom_prompt'),

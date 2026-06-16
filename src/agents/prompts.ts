@@ -12,7 +12,7 @@ export const CATEGORY_LABELS: Record<string, string> = {
   security: 'Security',
   tests: 'Test Coverage',
   performance: 'Performance',
-  cost: 'Cost & Infrastructure',
+  code: 'Code Guidelines',
   custom: 'Custom Review',
 };
 
@@ -23,8 +23,8 @@ const SPECIALIST_ROLES: Record<string, string> = {
     'QA architect specializing in test strategy, coverage analysis, and test reliability',
   performance:
     'performance engineer specializing in scalability, query optimization, and runtime efficiency',
-  cost:
-    'cloud infrastructure economist specializing in cost optimization and billing impact analysis',
+  code:
+    'senior software engineer specializing in code quality, correctness, error handling, and best practices',
   custom:
     'senior engineer conducting a focused review based on the provided guidelines',
 };
