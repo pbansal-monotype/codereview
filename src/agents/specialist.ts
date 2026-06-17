@@ -30,6 +30,9 @@ export async function runSpecialistAgent(
     );
     const userPrompt = buildSpecialistUserPrompt(sharedContext);
 
+    core.debug(`[${categoryId}] SYSTEM PROMPT (${systemPrompt.length} chars):\n${systemPrompt}`);
+    core.debug(`[${categoryId}] USER PROMPT (${userPrompt.length} chars):\n${userPrompt}`);
+
     const response = await provider.review({
       systemPrompt,
       userPrompt,
@@ -41,8 +44,11 @@ export async function runSpecialistAgent(
       findings = parseSpecialistFindings(response.review, categoryId);
     } catch {
       core.warning(`[${categoryId}] Failed to parse specialist output as JSON`);
+      core.debug(`[${categoryId}] RAW RESPONSE:\n${response.review}`);
       findings = [];
     }
+
+    core.debug(`[${categoryId}] RAW RESPONSE (${response.review.length} chars):\n${response.review}`);
 
     core.info(
       `[${categoryId}] ${label} found ${findings.length} issue(s) (${response.tokensUsed} tokens)`,

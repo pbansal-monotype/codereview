@@ -110,8 +110,6 @@ You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fen
   ]
 }
 
-${SEVERITY_RUBRIC}
-
 ONLY include findings that passed your verification. Remove findings with confidence "low". Empty findings = clean PR = good outcome.`;
 
 export function getJudgeJsonInstruction(): string {

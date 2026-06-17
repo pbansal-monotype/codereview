@@ -24,6 +24,9 @@ export async function runJudge(
   const systemPrompt = buildJudgeSystemPrompt(config, enabledCategories);
   const userPrompt = buildJudgeUserPrompt(specialistResults, pr, sharedContext);
 
+  core.debug(`[judge] SYSTEM PROMPT (${systemPrompt.length} chars):\n${systemPrompt}`);
+  core.debug(`[judge] USER PROMPT (${userPrompt.length} chars):\n${userPrompt}`);
+
   const response = await provider.review({
     systemPrompt,
     userPrompt,
@@ -40,6 +43,11 @@ export async function runJudge(
   } catch (err) {
     parseError = err;
     core.warning('[judge] Failed to parse judge output on first attempt — retrying once...');
+    core.debug(`[judge] RAW RESPONSE (unparseable):\n${response.review}`);
+  }
+
+  if (structured) {
+    core.debug(`[judge] RAW RESPONSE:\n${response.review}`);
   }
 
   if (!structured) {
