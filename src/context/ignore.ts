@@ -57,6 +57,14 @@ const DEFAULT_IGNORE_PATTERNS = [
   '**/*.ttf',
   '**/*.pdf',
   '**/*.zip',
+
+  // env files
+  '**/*.env',
+  '**/*.env.example',
+  '**/*.env.*',
+  '**/*.env.*.*',
+  '**/*.env.*.*.*',
+  '**/*.env.*.*.*.*',
 ];
 
 function globToRegex(glob: string): RegExp {

@@ -47,6 +47,8 @@ export interface ReviewContext {
 export interface BuildReviewContextOptions {
   /** When true, test-file scores are boosted so the tests specialist treats them as high priority. */
   boostTestFiles?: boolean;
+  /** True when the diff hunk is a newly added file (not a modification). */
+  isNew?: boolean;
 }
 
 export interface PrepareDiffOptions {
@@ -241,6 +243,8 @@ export const THRESHOLDS = {
   MEDIUM_RISK: 0.3,
 } as const;
 
+const NEW_FILE_BOOST = 0.15;
+
 export const RISK_PATH_PATTERNS: RiskPattern[] = [
   { pattern: /auth|login|logout|session|token|jwt|oauth|saml|sso|password|credential/i, score: 0.95 },
   { pattern: /payment|billing|stripe|wallet|invoice|checkout|subscription/i,            score: 0.95 },
@@ -248,7 +252,7 @@ export const RISK_PATH_PATTERNS: RiskPattern[] = [
   { pattern: /admin|internal|privileged|superuser|sudo/i,                               score: 0.85 },
   { pattern: /migration|schema|seed|db\/|database\//i,                                  score: 0.80 },
   { pattern: /config\/|settings\./i,                                                     score: 0.75 },
-  { pattern: /middleware|interceptor|guard|policy/i,                                    score: 0.75 },
+  { pattern: /middleware|interceptor|guard|policy|module|lib|library|util|helper|utils|common|shared/i,score: 0.75 },
   { pattern: /router|controller|handler|service|repository/i,                           score: 0.60 },
   { pattern: /index\.(js|ts|py|go|java|rb|php|c|cpp|h|swift|kt)$/i,                     score: 0.55 },
   { pattern: /\.env\.example$/i,                                                          score: 0.35 },
@@ -288,6 +292,16 @@ export function scoreFile(
   const deletions = (diffHunk.match(/^-[^-]/gm) ?? []).length;
   if (additions === 0 && deletions > 0) score = Math.max(0.0, score - 0.1);
 
+  if (options.isNew) {
+    score = Math.min(1.0, score + NEW_FILE_BOOST);
+    // New unpatterned source files (baseline 0.4) land at 0.55 after boost — floor to
+    // HIGH_RISK so new logic files get diff+content. Skip low-priority patterned files.
+    const isLowPriority = patternScore !== null && patternScore <= 0.35;
+    if (patternScore === null && !isLowPriority && score < THRESHOLDS.HIGH_RISK) {
+      score = THRESHOLDS.HIGH_RISK;
+    }
+  }
+
   return Math.min(1.0, score);
 }
 
@@ -302,7 +316,10 @@ export function buildReviewContext(
   const files = splitDiffByFile(rawDiff);
 
   const scored = files
-    .map((f) => ({ ...f, score: scoreFile(f.filePath, f.diffHunk, options) }))
+    .map((f) => ({
+      ...f,
+      score: scoreFile(f.filePath, f.diffHunk, { ...options, isNew: f.isNew }),
+    }))
     .sort((a, b) => b.score - a.score);
 
   const included: IncludedFile[] = [];

@@ -36,4 +36,17 @@ describe('scoreFile', () => {
     assert.ok(score >= THRESHOLDS.MEDIUM_RISK);
     assert.ok(score < THRESHOLDS.HIGH_RISK);
   });
+
+  it('boosts new unpatterned source files into high-risk (diff+content)', () => {
+    const modified = scoreFile('src/lib/initWfgFromConfig.js', SMALL_DIFF);
+    const added = scoreFile('src/lib/initWfgFromConfig.js', SMALL_DIFF, { isNew: true });
+    assert.ok(modified < THRESHOLDS.HIGH_RISK);
+    assert.ok(added >= THRESHOLDS.HIGH_RISK);
+    assert.ok(added > modified);
+  });
+
+  it('does not promote new .env.example to diff+content', () => {
+    const score = scoreFile('.env.example', SMALL_DIFF, { isNew: true });
+    assert.ok(score < THRESHOLDS.HIGH_RISK);
+  });
 });
