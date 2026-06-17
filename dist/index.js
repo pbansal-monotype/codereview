@@ -35653,7 +35653,7 @@ function formatReviewMarkdown(opts) {
     let md = `# 🤖 AI PR Review\n\n`;
     md += `**PR:** #${pr.number} — ${pr.title}\n`;
     md += `**Provider:** ${config.provider} (${config.model})\n`;
-    md += `**Mode:** Multi-agent (${apiCalls - 1} specialists + judge)\n`;
+    md += `**Mode:** Multi-agent (${apiCalls - 2} specialists + dedup + rewrite judges)\n`;
     md += `**Files reviewed:** ${pr.reviewedFiles.length} / ${pr.changedFiles.length} changed\n`;
     if (failClosed) {
         md += `\n> **Merge blocked — judge agent failed and the pipeline is fail-closed.**\n`;
@@ -35712,7 +35712,7 @@ function formatReviewMarkdown(opts) {
     md += `\n---\n\n`;
     md += `<details>\n<summary>📊 Review Stats</summary>\n\n`;
     md += `- Categories: ${categories.map((id) => prompts_1.CATEGORY_LABELS[id] || id).join(', ')}\n`;
-    md += `- API calls: ${apiCalls} (${apiCalls - 1} specialist + 1 judge)\n`;
+    md += `- API calls: ${apiCalls} (${apiCalls - 2} specialist + 2 judge)\n`;
     md += `- Tokens: ${totalTokens.input.toLocaleString()} input + ${totalTokens.output.toLocaleString()} output = ${(totalTokens.input + totalTokens.output).toLocaleString()} total\n`;
     const cost = (0, cost_1.estimateCost)(config.model, totalTokens.input, totalTokens.output);
     if (cost) {
@@ -36048,57 +36048,57 @@ exports.runJudge = runJudge;
 const core = __importStar(__nccwpck_require__(7484));
 const findings_1 = __nccwpck_require__(1001);
 const prompts_1 = __nccwpck_require__(2413);
-async function runJudge(provider, specialistResults, pr, config, sharedContext, enabledCategories) {
-    core.info('[judge] Starting quality gate review...');
-    const systemPrompt = (0, prompts_1.buildJudgeSystemPrompt)(config, enabledCategories);
-    const userPrompt = (0, prompts_1.buildJudgeUserPrompt)(specialistResults, pr, sharedContext);
-    core.debug(`[judge] SYSTEM PROMPT (${systemPrompt.length} chars):\n${systemPrompt}`);
-    core.debug(`[judge] USER PROMPT (${userPrompt.length} chars):\n${userPrompt}`);
-    const response = await provider.review({
-        systemPrompt,
-        userPrompt,
-        timeoutMs: config.timeoutMs,
-    });
-    // Attempt to parse the judge output. On first failure, retry the LLM call once
-    // before failing closed — parse errors are often transient formatting issues.
-    let structured;
-    let parseError;
+async function callWithParseRetry(label, provider, systemPrompt, userPrompt, timeoutMs, parse) {
+    const response = await provider.review({ systemPrompt, userPrompt, timeoutMs });
+    core.debug(`[${label}] SYSTEM PROMPT (${systemPrompt.length} chars):\n${systemPrompt}`);
+    core.debug(`[${label}] USER PROMPT (${userPrompt.length} chars):\n${userPrompt}`);
     try {
-        structured = response.structured ?? (0, findings_1.parseStructuredReview)(response.review);
+        const value = parse(response.review);
+        core.debug(`[${label}] RAW RESPONSE:\n${response.review}`);
+        return {
+            value,
+            tokensUsed: response.tokensUsed,
+            inputTokens: response.inputTokens,
+            outputTokens: response.outputTokens,
+        };
     }
     catch (err) {
-        parseError = err;
-        core.warning('[judge] Failed to parse judge output on first attempt — retrying once...');
-        core.debug(`[judge] RAW RESPONSE (unparseable):\n${response.review}`);
-    }
-    if (structured) {
-        core.debug(`[judge] RAW RESPONSE:\n${response.review}`);
-    }
-    if (!structured) {
-        // One retry: re-issue the same prompt.
-        const retry = await provider.review({
-            systemPrompt,
-            userPrompt,
-            timeoutMs: config.timeoutMs,
-        });
+        core.warning(`[${label}] Failed to parse output on first attempt — retrying once...`);
+        core.debug(`[${label}] RAW RESPONSE (unparseable):\n${response.review}`);
+        const retry = await provider.review({ systemPrompt, userPrompt, timeoutMs });
         try {
-            structured = retry.structured ?? (0, findings_1.parseStructuredReview)(retry.review);
-            // Merge token counts from both calls.
-            response.inputTokens += retry.inputTokens;
-            response.outputTokens += retry.outputTokens;
-            response.tokensUsed += retry.tokensUsed;
+            const value = parse(retry.review);
+            core.debug(`[${label}] RAW RESPONSE (retry):\n${retry.review}`);
+            return {
+                value,
+                tokensUsed: response.tokensUsed + retry.tokensUsed,
+                inputTokens: response.inputTokens + retry.inputTokens,
+                outputTokens: response.outputTokens + retry.outputTokens,
+            };
         }
         catch (retryErr) {
-            // Both attempts failed — re-throw so the orchestrator's fail-closed path fires.
             const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-            core.error(`[judge] Judge output unparseable after retry (original: ${String(parseError)}; retry: ${msg}) — failing closed`);
+            const original = err instanceof Error ? err.message : String(err);
+            core.error(`[${label}] Output unparseable after retry (original: ${original}; retry: ${msg}) — failing closed`);
             throw retryErr;
         }
     }
-    core.info(`[judge] Approved ${structured.findings.length} finding(s) (${response.tokensUsed} tokens)`);
+}
+async function runJudge(provider, specialistResults, pr, config, _sharedContext, _enabledCategories) {
+    const allFindings = (0, prompts_1.collectSpecialistFindings)(specialistResults);
+    core.info(`[judge/dedup] Deduplicating ${allFindings.length} raw finding(s)...`);
+    const dedupResult = await callWithParseRetry('judge/dedup', provider, (0, prompts_1.buildJudgeDedupSystemPrompt)(config), (0, prompts_1.buildJudgeDedupUserPrompt)(allFindings), config.timeoutMs, findings_1.parseDedupedFindings);
+    core.info(`[judge/dedup] ${dedupResult.value.length} finding(s) after dedup (${dedupResult.tokensUsed} tokens)`);
+    core.info('[judge/rewrite] Rewriting finding messages and writing summary...');
+    const rewriteResult = await callWithParseRetry('judge/rewrite', provider, (0, prompts_1.buildJudgeRewriteSystemPrompt)(config), (0, prompts_1.buildJudgeRewriteUserPrompt)(dedupResult.value, pr), config.timeoutMs, findings_1.parseStructuredReview);
+    const structured = rewriteResult.value;
+    const totalTokens = dedupResult.tokensUsed + rewriteResult.tokensUsed;
+    const inputTokens = dedupResult.inputTokens + rewriteResult.inputTokens;
+    const outputTokens = dedupResult.outputTokens + rewriteResult.outputTokens;
+    core.info(`[judge/rewrite] Final output: ${structured.findings.length} finding(s) (${rewriteResult.tokensUsed} tokens; ${totalTokens} total judge tokens)`);
     return {
         structured,
-        tokens: { input: response.inputTokens, output: response.outputTokens },
+        tokens: { input: inputTokens, output: outputTokens },
     };
 }
 
@@ -36226,10 +36226,8 @@ async function runReview(provider, config, pr) {
             core.info(`[${result.categoryId}] ${f.severity.toUpperCase()} ${f.file}:${f.line} — ${f.message}`);
         }
     }
-    // Stage 2: Judge — verify, deduplicate, recalibrate, cap the final list.
-    // Receives the same sharedContext (diff + full files) so it can check every
-    // finding against real code.
-    // Fail-closed: if the judge itself crashes (including unrecoverable parse failures)
+    // Stage 2: Judge — deduplicate then rewrite (two agent calls).
+    // Fail-closed: if either judge agent crashes (including unrecoverable parse failures)
     // we block the PR rather than silently shipping unverified findings.
     let judgeTokens = { input: 0, output: 0 };
     let structured;
@@ -36249,7 +36247,7 @@ async function runReview(provider, config, pr) {
             config,
             categories: categoryIds,
             totalTokens: { input: totalInput, output: totalOutput },
-            apiCalls: activeCategories.length + 1,
+            apiCalls: activeCategories.length + 2,
             specialistResults,
             failClosed: true,
             failReason: message,
@@ -36272,7 +36270,7 @@ async function runReview(provider, config, pr) {
         judgeTokens.input;
     const totalOutput = specialistResults.reduce((sum, r) => sum + r.tokens.output, 0) +
         judgeTokens.output;
-    const apiCalls = activeCategories.length + 1;
+    const apiCalls = activeCategories.length + 2;
     const markdown = (0, format_1.formatReviewMarkdown)({
         structured,
         pr,
@@ -36341,6 +36339,11 @@ exports.buildPrMetadata = buildPrMetadata;
 exports.buildSharedContext = buildSharedContext;
 exports.buildSpecialistSystemPrompt = buildSpecialistSystemPrompt;
 exports.buildSpecialistUserPrompt = buildSpecialistUserPrompt;
+exports.buildJudgeDedupSystemPrompt = buildJudgeDedupSystemPrompt;
+exports.buildJudgeDedupUserPrompt = buildJudgeDedupUserPrompt;
+exports.buildJudgeRewriteSystemPrompt = buildJudgeRewriteSystemPrompt;
+exports.buildJudgeRewriteUserPrompt = buildJudgeRewriteUserPrompt;
+exports.collectSpecialistFindings = collectSpecialistFindings;
 exports.buildJudgeSystemPrompt = buildJudgeSystemPrompt;
 exports.buildJudgeUserPrompt = buildJudgeUserPrompt;
 const core = __importStar(__nccwpck_require__(7484));
@@ -36456,148 +36459,92 @@ ${(0, config_1.getSpecialistJsonInstruction)()}`;
 function buildSpecialistUserPrompt(sharedContext) {
     return sharedContext + SPECIALIST_TAIL;
 }
-// ─── Judge prompts ─────────────────────────────────────────────────
-function buildJudgeSystemPrompt(config, enabledCategories) {
-    const categoryList = enabledCategories
-        .map((id) => exports.CATEGORY_LABELS[id] || id)
-        .join(', ');
+// ─── Judge prompts (dedup + rewrite) ───────────────────────────────
+function buildJudgeDedupSystemPrompt(config) {
     let prompt = INJECTION_GUARD;
-    prompt += `You are a principal engineer and the final quality gate for an AI-assisted PR review.
-Specialist reviewers (${categoryList}) have already examined the code and produced findings.
+    prompt += `You are deduplicating code review findings from multiple specialist agents.
 
-Your job is NOT to re-review the code from scratch. You must verify, deduplicate, filter, rewrite, and summarize.
+## Rules
 
-IMPORTANT: Your default posture is to KEEP findings. Only discard a finding if it clearly and unambiguously meets a discard criterion below. When in doubt, keep it. Returning more findings is better than returning fewer.
-
----
-
-## STEP 1 — VERIFY
-
-For each finding, answer all three questions:
-- Does the codeSnippet appear in the actual diff or file content, verbatim or near-verbatim?
-- Does the issue exist when you read the code surrounding the snippet, not just the snippet in isolation?
-- Is the issue definitively and completely handled by other code visible in the diff or file context?
-
-Discard only if the snippet does not exist in the code at all, or if the issue is definitively and visibly handled elsewhere. Do not discard because the issue seems unlikely or low priority.
-
----
-
-## STEP 2 — DEDUPLICATE
-
-Two findings are duplicates ONLY IF all three of the following are true simultaneously:
-1. They refer to the same named function or the same named variable.
-2. They identify the same missing guard, check, or behavior — not just the same theme.
+Two findings are duplicates ONLY IF all three conditions are true simultaneously:
+1. They refer to the same named function or named variable.
+2. They identify the same missing guard, check, or behavior.
 3. They produce the same failure mode in production.
 
-If any one of these three conditions is not met, the findings are NOT duplicates. Keep both.
+If any condition is not met, keep both. Do not merge findings because they are in the same file or share a theme.
 
 Additional rules:
-- Two findings in the same file but in different functions are NEVER duplicates, even if they feel thematically related.
-- Two findings about the same function but about different missing guards (e.g., missing null check vs. missing try/catch) are NEVER duplicates.
-- A finding about production code and a finding about a test file for that same production code are NEVER duplicates — they describe different defects.
-- When two findings genuinely meet all three conditions above, keep the one with the most specific fix and the highest severity. Combine unique failure-mode details from both into the surviving message.
+- Multiple findings in the same file is normal — do not merge them unless all three conditions above are met.
+- Different functions in the same file are never duplicates.
+- Different missing guards in the same function (e.g., missing null check vs. missing try/catch) are never duplicates.
+- A production code finding and a test finding for the same code are never duplicates.
+- When merging genuine duplicates: keep the highest severity, keep the most specific codeSnippet, combine unique failure-mode details into a single message, keep the highest confidence.
 
----
-
-## STEP 3 — FILTER
-
-Discard a finding ONLY IF it matches one of these specific conditions:
-
-- Confidence is "low". Remove unconditionally.
-- The codeSnippet does not appear in the diff or file content.
-- The fix proposed names no specific function, variable, line, or pattern to change — it is impossible to act on.
-- The issue is demonstrably and completely handled by code visible in this PR's diff or file context. You must be able to point to the exact line that handles it.
-- The finding only describes what the code does, not what is wrong or what breaks.
-
-Do NOT discard for any of the following reasons:
-- The fix seems obvious.
-- Similar issues exist in other files or other projects.
-- The finding is about a test file — test coverage gaps are real defects.
-- The severity feels low.
-- The finding addresses a pattern common in Node.js codebases — if this specific PR's code has the problem, it must be kept.
-- The finding is about a new file or new function introduced in this PR.
-
----
-
-## STEP 4 — REWRITE
-
-Rewrite each surviving finding's message in exactly three sentences. No brackets. No hedging.
-
-Sentence 1: Name the specific function, variable, or code construct that is broken or missing, and describe what it does wrong.
-Sentence 2: Describe the exact failure mode in production — what error is thrown, what data is corrupted, what attack is enabled, or what resource is exhausted — and under what specific condition.
-Sentence 3: Name the exact code change required — the function to call, the guard to add, the field to check, or the pattern to replace — and where to put it.
-
-Banned phrases: "Ensure", "Consider", "Make sure", "It is recommended", "This could potentially", "You should", "It would be good to".
-If a sentence would naturally start with a banned phrase, restructure it to start with the subject of the code instead.
-
----
-
-## STEP 5 — SUMMARIZE
-
-Write 2–4 sentences:
-- What this PR does at a high level (one sentence).
-- Overall code quality and merge readiness (one sentence).
-- The most critical issues blocking merge, if any (one or two sentences).
-
----
-
-${config_1.SEVERITY_RUBRIC}
-
-${(0, config_1.getJudgeJsonInstruction)()}`;
+${(0, config_1.getJudgeDedupJsonInstruction)()}`;
     if (config.extraInstructions) {
         prompt += `\n\nAdditional company instructions:\n${config.extraInstructions}`;
     }
     return prompt;
 }
-/**
- * Builds the judge's prompt.
- * Receives the pre-built sharedContext (diff + full file contents) so the
- * judge can verify every finding against real code — not just the diff.
- * The judge receives the same context budget as the specialists (no truncation).
- */
-function buildJudgeUserPrompt(specialistResults, pr, sharedContext) {
-    let prompt = `## PR: ${pr.title}\n`;
-    prompt += `**Author:** ${pr.author} | **Branch:** ${pr.headBranch} → ${pr.baseBranch}\n`;
+function buildJudgeDedupUserPrompt(allFindings) {
+    return `## Input Findings
+${JSON.stringify(allFindings, null, 2)}
+
+Return a single valid JSON array of deduplicated findings. Preserve all fields from the input exactly.`;
+}
+function buildJudgeRewriteSystemPrompt(config) {
+    let prompt = INJECTION_GUARD;
+    prompt += `You are rewriting code review finding messages into a consistent format.
+
+## Rules
+
+Rewrite each finding's message field in exactly three sentences. Change only the message field. Do not change any other field. Do not add or remove findings.
+
+Sentence 1: Name the specific function, variable, or code construct that is broken or missing and state what it does wrong.
+Sentence 2: State the exact failure mode in production — what error is thrown, what is exploited, or what resource is exhausted — and under what condition.
+Sentence 3: State the exact code change required and where to make it.
+
+Banned phrases: "Ensure", "Consider", "Make sure", "It is recommended", "This could potentially", "You should", "It would be good to". If a sentence would start with a banned phrase, restructure it to start with the code subject instead.
+
+Sort findings: critical first, then warning, then suggestion. Within each severity group, sort alphabetically by file path.
+
+${(0, config_1.getJudgeRewriteJsonInstruction)()}`;
+    if (config.extraInstructions) {
+        prompt += `\n\nAdditional company instructions:\n${config.extraInstructions}`;
+    }
+    return prompt;
+}
+function buildJudgeRewriteUserPrompt(dedupedFindings, pr) {
+    let prompt = `## Pull Request\n`;
+    prompt += `- **Title:** ${pr.title}\n`;
+    prompt += `- **Author:** ${pr.author}\n`;
+    prompt += `- **Branch:** ${pr.headBranch} → ${pr.baseBranch}\n`;
     if (pr.body) {
         prompt += `\n### PR Description\n<pr_description>\n${pr.body}\n</pr_description>\n`;
     }
-    prompt += `\n## Raw Findings from Specialist Reviewers\n`;
-    prompt += `Verify each finding against the code context below. Cross-check with the full file contents — is the issue real, or did the specialist miss surrounding code that already handles it?\n\n`;
-    let totalFindings = 0;
-    for (const result of specialistResults) {
-        const label = exports.CATEGORY_LABELS[result.categoryId] || result.categoryId;
-        if (result.failed) {
-            prompt += `### ${label} Agent: FAILED (${result.error})\n`;
-            prompt += `> ⚠️ This category produced no findings due to a crash. Treat as incomplete coverage, not a clean pass.\n\n`;
-            continue;
-        }
-        if (result.findings.length === 0) {
-            prompt += `### ${label} Agent: No issues found ✓\n\n`;
-            continue;
-        }
-        prompt += `### ${label} Agent (category id: "${result.categoryId}")\n`;
-        prompt += '```json\n';
-        prompt += JSON.stringify(result.findings.map((f) => ({
-            severity: f.severity,
-            confidence: f.confidence,
-            file: f.file,
-            line: f.line,
-            codeSnippet: f.codeSnippet,
-            message: f.message,
-        })), null, 2);
-        prompt += '\n```\n\n';
-        totalFindings += result.findings.length;
-    }
-    if (totalFindings === 0) {
-        prompt += `\n**All specialists reported clean — no issues found.**\n`;
-        prompt += `Write a brief positive summary and return an empty findings array.\n`;
-    }
-    // Pass the full shared context (diff + file contents) so the judge can verify
-    // findings against actual code. No truncation — the judge gets the same budget
-    // the specialists received.
-    prompt += `\n## Code Context (diff + full files, for verification)\n${sharedContext}`;
-    prompt += `\nVerify each finding against this context. Return the final consolidated JSON with only verified, high-quality findings.`;
+    prompt += `\n## Input Findings
+${JSON.stringify(dedupedFindings, null, 2)}
+
+Rewrite each finding message and write the PR summary. Return the final JSON object.`;
     return prompt;
+}
+/** Collect all findings from specialist results, attaching category from each agent. */
+function collectSpecialistFindings(specialistResults) {
+    const allFindings = [];
+    for (const result of specialistResults) {
+        if (result.failed)
+            continue;
+        allFindings.push(...result.findings);
+    }
+    return allFindings;
+}
+/** @deprecated Use buildJudgeDedupSystemPrompt / buildJudgeRewriteSystemPrompt */
+function buildJudgeSystemPrompt(config, _enabledCategories) {
+    return buildJudgeDedupSystemPrompt(config);
+}
+/** @deprecated Use buildJudgeDedupUserPrompt / buildJudgeRewriteUserPrompt */
+function buildJudgeUserPrompt(specialistResults, pr, _sharedContext) {
+    return buildJudgeRewriteUserPrompt(collectSpecialistFindings(specialistResults), pr);
 }
 
 
@@ -36736,6 +36683,8 @@ exports.MAX_PROMPT_CHARS = exports.SEVERITY_RUBRIC = exports.MAX_PROMPT_TOKENS =
 exports.charsToTokens = charsToTokens;
 exports.tokensToChars = tokensToChars;
 exports.getSpecialistJsonInstruction = getSpecialistJsonInstruction;
+exports.getJudgeDedupJsonInstruction = getJudgeDedupJsonInstruction;
+exports.getJudgeRewriteJsonInstruction = getJudgeRewriteJsonInstruction;
 exports.getJudgeJsonInstruction = getJudgeJsonInstruction;
 exports.loadConfig = loadConfig;
 const core = __importStar(__nccwpck_require__(7484));
@@ -36792,26 +36741,48 @@ RULES:
 function getSpecialistJsonInstruction() {
     return SPECIALIST_JSON_INSTRUCTION;
 }
-const JUDGE_JSON_INSTRUCTION = `
+const JUDGE_DEDUP_JSON_INSTRUCTION = `
+You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fence. Schema:
+[
+  {
+    "category": "<category_id>",
+    "severity": "critical" | "warning" | "suggestion",
+    "confidence": "high" | "medium" | "low",
+    "file": "path/to/file.ts",
+    "line": 42,
+    "codeSnippet": "verbatim 1-3 line excerpt of the problematic code",
+    "message": "..."
+  }
+]
+
+Return a single valid JSON array. No markdown. No text outside the JSON.`;
+const JUDGE_REWRITE_JSON_INSTRUCTION = `
 You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fence. Schema:
 {
-  "summary": "1-3 sentence overall assessment of the PR",
+  "summary": "<2-4 sentences: what the PR does, overall quality, critical blockers if any>",
   "findings": [
     {
       "category": "<category_id>",
       "severity": "critical" | "warning" | "suggestion",
-      "confidence": "high" | "medium" | "low",
+      "confidence": "high" | "medium",
       "file": "path/to/file.ts",
       "line": 42,
       "codeSnippet": "verbatim 1-3 line excerpt of the problematic code",
-      "message": "What is wrong → Why it matters → How to fix it"
+      "message": "<Sentence 1. Sentence 2. Sentence 3.>"
     }
   ]
 }
 
-ONLY include findings that passed your verification. Remove findings with confidence "low". Empty findings = clean PR = good outcome.`;
+Return a single valid JSON object. No markdown. No text outside the JSON.`;
+function getJudgeDedupJsonInstruction() {
+    return JUDGE_DEDUP_JSON_INSTRUCTION;
+}
+function getJudgeRewriteJsonInstruction() {
+    return JUDGE_REWRITE_JSON_INSTRUCTION;
+}
+/** @deprecated Use getJudgeRewriteJsonInstruction */
 function getJudgeJsonInstruction() {
-    return JUDGE_JSON_INSTRUCTION;
+    return getJudgeRewriteJsonInstruction();
 }
 // ─── Config loading ────────────────────────────────────────────────
 function bool(value, fallback) {
@@ -37498,6 +37469,8 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.parseStructuredReview = parseStructuredReview;
 exports.parseSpecialistFindings = parseSpecialistFindings;
 exports.hasCriticalFindings = hasCriticalFindings;
+exports.sortFindingsForReview = sortFindingsForReview;
+exports.parseDedupedFindings = parseDedupedFindings;
 exports.extractJson = extractJson;
 exports.formatFindingsMarkdown = formatFindingsMarkdown;
 const VALID_SEVERITIES = new Set(['critical', 'warning', 'suggestion']);
@@ -37566,14 +37539,7 @@ function parseStructuredReview(raw) {
             });
         }
     }
-    const sorted = findings.sort((a, b) => {
-        const severityOrder = { critical: 0, warning: 1, suggestion: 2 };
-        const confOrder = { high: 0, medium: 1 };
-        const sDiff = (severityOrder[a.severity] ?? 2) - (severityOrder[b.severity] ?? 2);
-        if (sDiff !== 0)
-            return sDiff;
-        return (confOrder[a.confidence] ?? 1) - (confOrder[b.confidence] ?? 1);
-    });
+    const sorted = sortFindingsForReview(findings);
     return { summary, findings: sorted.slice(0, MAX_FINDINGS) };
 }
 /**
@@ -37619,6 +37585,53 @@ function parseSpecialistFindings(raw, categoryId) {
 function hasCriticalFindings(review) {
     return review.findings.some((f) => f.severity === 'critical');
 }
+function sortFindingsForReview(findings) {
+    const severityOrder = { critical: 0, warning: 1, suggestion: 2 };
+    return [...findings].sort((a, b) => {
+        const sDiff = (severityOrder[a.severity] ?? 2) - (severityOrder[b.severity] ?? 2);
+        if (sDiff !== 0)
+            return sDiff;
+        return (a.file ?? '').localeCompare(b.file ?? '');
+    });
+}
+/**
+ * Parse output from the judge dedup agent — a bare JSON array of findings.
+ */
+function parseDedupedFindings(raw) {
+    const json = extractJson(raw);
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) {
+        throw new Error('Dedup agent output must be a JSON array');
+    }
+    const findings = [];
+    for (const item of parsed) {
+        if (!item || typeof item !== 'object')
+            continue;
+        const f = item;
+        const severity = String(f.severity ?? '').toLowerCase();
+        if (!VALID_SEVERITIES.has(severity))
+            continue;
+        if (!f.message || typeof f.message !== 'string')
+            continue;
+        if (!f.category || typeof f.category !== 'string')
+            continue;
+        if (!f.file || typeof f.file !== 'string')
+            continue;
+        const confidence = VALID_CONFIDENCES.has(String(f.confidence ?? '').toLowerCase())
+            ? String(f.confidence).toLowerCase()
+            : 'medium';
+        findings.push({
+            category: f.category,
+            severity: severity,
+            confidence,
+            file: f.file,
+            line: typeof f.line === 'number' ? f.line : undefined,
+            codeSnippet: typeof f.codeSnippet === 'string' ? f.codeSnippet.trim() : undefined,
+            message: f.message,
+        });
+    }
+    return findings;
+}
 function extractJson(text) {
     const trimmed = text.trim();
     const fencedBlocks = [...trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)];
@@ -37626,7 +37639,33 @@ function extractJson(text) {
         const last = fencedBlocks[fencedBlocks.length - 1];
         return last[1].trim();
     }
-    const start = trimmed.indexOf('{');
+    const arrayStart = trimmed.indexOf('[');
+    const objectStart = trimmed.indexOf('{');
+    if (arrayStart !== -1 && (objectStart === -1 || arrayStart < objectStart)) {
+        const arrayEnd = trimmed.lastIndexOf(']');
+        if (arrayEnd > arrayStart) {
+            const candidate = trimmed.slice(arrayStart, arrayEnd + 1);
+            try {
+                JSON.parse(candidate);
+                return candidate;
+            }
+            catch {
+                for (let i = arrayEnd; i > arrayStart; i--) {
+                    if (trimmed[i] !== ']')
+                        continue;
+                    const slice = trimmed.slice(arrayStart, i + 1);
+                    try {
+                        JSON.parse(slice);
+                        return slice;
+                    }
+                    catch {
+                        continue;
+                    }
+                }
+            }
+        }
+    }
+    const start = objectStart;
     const end = trimmed.lastIndexOf('}');
     if (start !== -1 && end > start) {
         const candidate = trimmed.slice(start, end + 1);

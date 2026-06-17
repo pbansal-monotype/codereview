@@ -93,27 +93,52 @@ export function getSpecialistJsonInstruction(): string {
   return SPECIALIST_JSON_INSTRUCTION;
 }
 
-const JUDGE_JSON_INSTRUCTION = `
+const JUDGE_DEDUP_JSON_INSTRUCTION = `
+You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fence. Schema:
+[
+  {
+    "category": "<category_id>",
+    "severity": "critical" | "warning" | "suggestion",
+    "confidence": "high" | "medium" | "low",
+    "file": "path/to/file.ts",
+    "line": 42,
+    "codeSnippet": "verbatim 1-3 line excerpt of the problematic code",
+    "message": "..."
+  }
+]
+
+Return a single valid JSON array. No markdown. No text outside the JSON.`;
+
+const JUDGE_REWRITE_JSON_INSTRUCTION = `
 You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fence. Schema:
 {
-  "summary": "1-3 sentence overall assessment of the PR",
+  "summary": "<2-4 sentences: what the PR does, overall quality, critical blockers if any>",
   "findings": [
     {
       "category": "<category_id>",
       "severity": "critical" | "warning" | "suggestion",
-      "confidence": "high" | "medium" | "low",
+      "confidence": "high" | "medium",
       "file": "path/to/file.ts",
       "line": 42,
       "codeSnippet": "verbatim 1-3 line excerpt of the problematic code",
-      "message": "What is wrong → Why it matters → How to fix it"
+      "message": "<Sentence 1. Sentence 2. Sentence 3.>"
     }
   ]
 }
 
-ONLY include findings that passed your verification. Remove findings with confidence "low". Empty findings = clean PR = good outcome.`;
+Return a single valid JSON object. No markdown. No text outside the JSON.`;
 
+export function getJudgeDedupJsonInstruction(): string {
+  return JUDGE_DEDUP_JSON_INSTRUCTION;
+}
+
+export function getJudgeRewriteJsonInstruction(): string {
+  return JUDGE_REWRITE_JSON_INSTRUCTION;
+}
+
+/** @deprecated Use getJudgeRewriteJsonInstruction */
 export function getJudgeJsonInstruction(): string {
-  return JUDGE_JSON_INSTRUCTION;
+  return getJudgeRewriteJsonInstruction();
 }
 
 // ─── Config loading ────────────────────────────────────────────────

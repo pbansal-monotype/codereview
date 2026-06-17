@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import {
   parseStructuredReview,
   parseSpecialistFindings,
+  parseDedupedFindings,
   hasCriticalFindings,
   extractJson,
+  sortFindingsForReview,
 } from '../findings';
 
 describe('parseStructuredReview', () => {
@@ -134,6 +136,14 @@ describe('parseStructuredReview', () => {
     assert.equal(extractJson(raw), '{"summary":"ok","findings":[]}');
   });
 
+  it('extracts JSON arrays from markdown fences', () => {
+    const raw = '```json\n[{"category":"security","severity":"warning","file":"src/a.ts","message":"x"}]\n```';
+    assert.equal(
+      extractJson(raw),
+      '[{"category":"security","severity":"warning","file":"src/a.ts","message":"x"}]',
+    );
+  });
+
   it('detects critical findings reliably', () => {
     const review = parseStructuredReview(
       JSON.stringify({
@@ -158,6 +168,64 @@ describe('parseStructuredReview', () => {
       }),
     );
     assert.equal(review.findings.length, 1);
+  });
+});
+
+describe('parseDedupedFindings', () => {
+  it('parses a bare JSON array of findings', () => {
+    const raw = JSON.stringify([
+      {
+        category: 'security',
+        severity: 'critical',
+        confidence: 'high',
+        file: 'src/auth.ts',
+        line: 10,
+        codeSnippet: 'const x = 1;',
+        message: 'Missing auth check',
+      },
+    ]);
+    const findings = parseDedupedFindings(raw);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].category, 'security');
+    assert.equal(findings[0].codeSnippet, 'const x = 1;');
+  });
+
+  it('throws when output is not an array', () => {
+    assert.throws(
+      () => parseDedupedFindings('{"summary":"ok","findings":[]}'),
+      /JSON array/i,
+    );
+  });
+});
+
+describe('sortFindingsForReview', () => {
+  it('sorts by severity then file path', () => {
+    const sorted = sortFindingsForReview([
+      { category: 'code', severity: 'warning', confidence: 'high', file: 'src/z.ts', message: 'a' },
+      { category: 'code', severity: 'critical', confidence: 'high', file: 'src/b.ts', message: 'b' },
+      { category: 'code', severity: 'warning', confidence: 'high', file: 'src/a.ts', message: 'c' },
+    ]);
+    assert.deepEqual(sorted.map((f) => `${f.severity}:${f.file}`), [
+      'critical:src/b.ts',
+      'warning:src/a.ts',
+      'warning:src/z.ts',
+    ]);
+  });
+});
+
+describe('parseStructuredReview sort order', () => {
+  it('sorts by severity then file path', () => {
+    const review = parseStructuredReview(
+      JSON.stringify({
+        summary: 'Issues',
+        findings: [
+          { category: 'code', severity: 'warning', confidence: 'high', file: 'src/z.ts', message: 'Issue z → risk → fix' },
+          { category: 'code', severity: 'critical', confidence: 'high', file: 'src/b.ts', message: 'Issue b → risk → fix' },
+          { category: 'code', severity: 'warning', confidence: 'high', file: 'src/a.ts', message: 'Issue a → risk → fix' },
+        ],
+      }),
+    );
+    assert.deepEqual(review.findings.map((f) => f.file), ['src/b.ts', 'src/a.ts', 'src/z.ts']);
   });
 });
 

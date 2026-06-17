@@ -2,13 +2,14 @@ import * as core from '@actions/core';
 import {
   ReviewConfig,
   getSpecialistJsonInstruction,
-  getJudgeJsonInstruction,
-  SEVERITY_RUBRIC,
+  getJudgeDedupJsonInstruction,
+  getJudgeRewriteJsonInstruction,
   MAX_PROMPT_TOKENS,
   tokensToChars,
 } from '../config';
 import { PullRequestData } from '../github';
 import { SpecialistResult } from './types';
+import { Finding } from '../findings';
 import { buildReviewContext, buildFileSummary } from '../context/diff';
 
 export const CATEGORY_LABELS: Record<string, string> = {
@@ -168,99 +169,29 @@ export function buildSpecialistUserPrompt(sharedContext: string): string {
   return sharedContext + SPECIALIST_TAIL;
 }
 
-// ─── Judge prompts ─────────────────────────────────────────────────
+// ─── Judge prompts (dedup + rewrite) ───────────────────────────────
 
-export function buildJudgeSystemPrompt(
-  config: ReviewConfig,
-  enabledCategories: string[],
-): string {
-  const categoryList = enabledCategories
-    .map((id) => CATEGORY_LABELS[id] || id)
-    .join(', ');
-
+export function buildJudgeDedupSystemPrompt(config: ReviewConfig): string {
   let prompt = INJECTION_GUARD;
-  prompt += `You are a principal engineer and the final quality gate for an AI-assisted PR review.
-Specialist reviewers (${categoryList}) have already examined the code and produced findings.
+  prompt += `You are deduplicating code review findings from multiple specialist agents.
 
-Your job is NOT to re-review the code from scratch. You must verify, deduplicate, filter, rewrite, and summarize.
+## Rules
 
-IMPORTANT: Your default posture is to KEEP findings. Only discard a finding if it clearly and unambiguously meets a discard criterion below. When in doubt, keep it. Returning more findings is better than returning fewer.
-
----
-
-## STEP 1 — VERIFY
-
-For each finding, answer all three questions:
-- Does the codeSnippet appear in the actual diff or file content, verbatim or near-verbatim?
-- Does the issue exist when you read the code surrounding the snippet, not just the snippet in isolation?
-- Is the issue definitively and completely handled by other code visible in the diff or file context?
-
-Discard only if the snippet does not exist in the code at all, or if the issue is definitively and visibly handled elsewhere. Do not discard because the issue seems unlikely or low priority.
-
----
-
-## STEP 2 — DEDUPLICATE
-
-Two findings are duplicates ONLY IF all three of the following are true simultaneously:
-1. They refer to the same named function or the same named variable.
-2. They identify the same missing guard, check, or behavior — not just the same theme.
+Two findings are duplicates ONLY IF all three conditions are true simultaneously:
+1. They refer to the same named function or named variable.
+2. They identify the same missing guard, check, or behavior.
 3. They produce the same failure mode in production.
 
-If any one of these three conditions is not met, the findings are NOT duplicates. Keep both.
+If any condition is not met, keep both. Do not merge findings because they are in the same file or share a theme.
 
 Additional rules:
-- Two findings in the same file but in different functions are NEVER duplicates, even if they feel thematically related.
-- Two findings about the same function but about different missing guards (e.g., missing null check vs. missing try/catch) are NEVER duplicates.
-- A finding about production code and a finding about a test file for that same production code are NEVER duplicates — they describe different defects.
-- When two findings genuinely meet all three conditions above, keep the one with the most specific fix and the highest severity. Combine unique failure-mode details from both into the surviving message.
+- Multiple findings in the same file is normal — do not merge them unless all three conditions above are met.
+- Different functions in the same file are never duplicates.
+- Different missing guards in the same function (e.g., missing null check vs. missing try/catch) are never duplicates.
+- A production code finding and a test finding for the same code are never duplicates.
+- When merging genuine duplicates: keep the highest severity, keep the most specific codeSnippet, combine unique failure-mode details into a single message, keep the highest confidence.
 
----
-
-## STEP 3 — FILTER
-
-Discard a finding ONLY IF it matches one of these specific conditions:
-
-- Confidence is "low". Remove unconditionally.
-- The codeSnippet does not appear in the diff or file content.
-- The fix proposed names no specific function, variable, line, or pattern to change — it is impossible to act on.
-- The issue is demonstrably and completely handled by code visible in this PR's diff or file context. You must be able to point to the exact line that handles it.
-- The finding only describes what the code does, not what is wrong or what breaks.
-
-Do NOT discard for any of the following reasons:
-- The fix seems obvious.
-- Similar issues exist in other files or other projects.
-- The finding is about a test file — test coverage gaps are real defects.
-- The severity feels low.
-- The finding addresses a pattern common in Node.js codebases — if this specific PR's code has the problem, it must be kept.
-- The finding is about a new file or new function introduced in this PR.
-
----
-
-## STEP 4 — REWRITE
-
-Rewrite each surviving finding's message in exactly three sentences. No brackets. No hedging.
-
-Sentence 1: Name the specific function, variable, or code construct that is broken or missing, and describe what it does wrong.
-Sentence 2: Describe the exact failure mode in production — what error is thrown, what data is corrupted, what attack is enabled, or what resource is exhausted — and under what specific condition.
-Sentence 3: Name the exact code change required — the function to call, the guard to add, the field to check, or the pattern to replace — and where to put it.
-
-Banned phrases: "Ensure", "Consider", "Make sure", "It is recommended", "This could potentially", "You should", "It would be good to".
-If a sentence would naturally start with a banned phrase, restructure it to start with the subject of the code instead.
-
----
-
-## STEP 5 — SUMMARIZE
-
-Write 2–4 sentences:
-- What this PR does at a high level (one sentence).
-- Overall code quality and merge readiness (one sentence).
-- The most critical issues blocking merge, if any (one or two sentences).
-
----
-
-${SEVERITY_RUBRIC}
-
-${getJudgeJsonInstruction()}`;
+${getJudgeDedupJsonInstruction()}`;
 
   if (config.extraInstructions) {
     prompt += `\n\nAdditional company instructions:\n${config.extraInstructions}`;
@@ -269,70 +200,84 @@ ${getJudgeJsonInstruction()}`;
   return prompt;
 }
 
-/**
- * Builds the judge's prompt.
- * Receives the pre-built sharedContext (diff + full file contents) so the
- * judge can verify every finding against real code — not just the diff.
- * The judge receives the same context budget as the specialists (no truncation).
- */
-export function buildJudgeUserPrompt(
-  specialistResults: SpecialistResult[],
+export function buildJudgeDedupUserPrompt(allFindings: Finding[]): string {
+  return `## Input Findings
+${JSON.stringify(allFindings, null, 2)}
+
+Return a single valid JSON array of deduplicated findings. Preserve all fields from the input exactly.`;
+}
+
+export function buildJudgeRewriteSystemPrompt(config: ReviewConfig): string {
+  let prompt = INJECTION_GUARD;
+  prompt += `You are rewriting code review finding messages into a consistent format.
+
+## Rules
+
+Rewrite each finding's message field in exactly three sentences. Change only the message field. Do not change any other field. Do not add or remove findings.
+
+Sentence 1: Name the specific function, variable, or code construct that is broken or missing and state what it does wrong.
+Sentence 2: State the exact failure mode in production — what error is thrown, what is exploited, or what resource is exhausted — and under what condition.
+Sentence 3: State the exact code change required and where to make it.
+
+Banned phrases: "Ensure", "Consider", "Make sure", "It is recommended", "This could potentially", "You should", "It would be good to". If a sentence would start with a banned phrase, restructure it to start with the code subject instead.
+
+Sort findings: critical first, then warning, then suggestion. Within each severity group, sort alphabetically by file path.
+
+${getJudgeRewriteJsonInstruction()}`;
+
+  if (config.extraInstructions) {
+    prompt += `\n\nAdditional company instructions:\n${config.extraInstructions}`;
+  }
+
+  return prompt;
+}
+
+export function buildJudgeRewriteUserPrompt(
+  dedupedFindings: Finding[],
   pr: PullRequestData,
-  sharedContext: string,
 ): string {
-  let prompt = `## PR: ${pr.title}\n`;
-  prompt += `**Author:** ${pr.author} | **Branch:** ${pr.headBranch} → ${pr.baseBranch}\n`;
+  let prompt = `## Pull Request\n`;
+  prompt += `- **Title:** ${pr.title}\n`;
+  prompt += `- **Author:** ${pr.author}\n`;
+  prompt += `- **Branch:** ${pr.headBranch} → ${pr.baseBranch}\n`;
 
   if (pr.body) {
     prompt += `\n### PR Description\n<pr_description>\n${pr.body}\n</pr_description>\n`;
   }
 
-  prompt += `\n## Raw Findings from Specialist Reviewers\n`;
-  prompt += `Verify each finding against the code context below. Cross-check with the full file contents — is the issue real, or did the specialist miss surrounding code that already handles it?\n\n`;
+  prompt += `\n## Input Findings
+${JSON.stringify(dedupedFindings, null, 2)}
 
-  let totalFindings = 0;
-  for (const result of specialistResults) {
-    const label = CATEGORY_LABELS[result.categoryId] || result.categoryId;
-
-    if (result.failed) {
-      prompt += `### ${label} Agent: FAILED (${result.error})\n`;
-      prompt += `> ⚠️ This category produced no findings due to a crash. Treat as incomplete coverage, not a clean pass.\n\n`;
-      continue;
-    }
-
-    if (result.findings.length === 0) {
-      prompt += `### ${label} Agent: No issues found ✓\n\n`;
-      continue;
-    }
-
-    prompt += `### ${label} Agent (category id: "${result.categoryId}")\n`;
-    prompt += '```json\n';
-    prompt += JSON.stringify(
-      result.findings.map((f) => ({
-        severity: f.severity,
-        confidence: f.confidence,
-        file: f.file,
-        line: f.line,
-        codeSnippet: f.codeSnippet,
-        message: f.message,
-      })),
-      null,
-      2,
-    );
-    prompt += '\n```\n\n';
-    totalFindings += result.findings.length;
-  }
-
-  if (totalFindings === 0) {
-    prompt += `\n**All specialists reported clean — no issues found.**\n`;
-    prompt += `Write a brief positive summary and return an empty findings array.\n`;
-  }
-
-  // Pass the full shared context (diff + file contents) so the judge can verify
-  // findings against actual code. No truncation — the judge gets the same budget
-  // the specialists received.
-  prompt += `\n## Code Context (diff + full files, for verification)\n${sharedContext}`;
-  prompt += `\nVerify each finding against this context. Return the final consolidated JSON with only verified, high-quality findings.`;
+Rewrite each finding message and write the PR summary. Return the final JSON object.`;
 
   return prompt;
+}
+
+/** Collect all findings from specialist results, attaching category from each agent. */
+export function collectSpecialistFindings(
+  specialistResults: SpecialistResult[],
+): Finding[] {
+  const allFindings: Finding[] = [];
+  for (const result of specialistResults) {
+    if (result.failed) continue;
+    allFindings.push(...result.findings);
+  }
+  return allFindings;
+}
+
+/** @deprecated Use buildJudgeDedupSystemPrompt / buildJudgeRewriteSystemPrompt */
+export function buildJudgeSystemPrompt(
+  config: ReviewConfig,
+  _enabledCategories: string[],
+): string {
+  return buildJudgeDedupSystemPrompt(config);
+}
+
+/** @deprecated Use buildJudgeDedupUserPrompt / buildJudgeRewriteUserPrompt */
+export function buildJudgeUserPrompt(
+  specialistResults: SpecialistResult[],
+  pr: PullRequestData,
+  _sharedContext: string,
+): string {
+  return buildJudgeRewriteUserPrompt(collectSpecialistFindings(specialistResults), pr);
 }

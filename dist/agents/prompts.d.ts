@@ -1,6 +1,7 @@
 import { ReviewConfig } from '../config';
 import { PullRequestData } from '../github';
 import { SpecialistResult } from './types';
+import { Finding } from '../findings';
 export declare const CATEGORY_LABELS: Record<string, string>;
 export declare function buildPrMetadata(pr: PullRequestData, config: ReviewConfig): string;
 /**
@@ -15,12 +16,14 @@ export declare function buildSharedContext(pr: PullRequestData, config: ReviewCo
 export declare function buildSpecialistSystemPrompt(categoryId: string, guidelines: string, config: ReviewConfig): string;
 /** Appends the specialist review instruction to the shared context. */
 export declare function buildSpecialistUserPrompt(sharedContext: string): string;
-export declare function buildJudgeSystemPrompt(config: ReviewConfig, enabledCategories: string[]): string;
-/**
- * Builds the judge's prompt.
- * Receives the pre-built sharedContext (diff + full file contents) so the
- * judge can verify every finding against real code — not just the diff.
- * The judge receives the same context budget as the specialists (no truncation).
- */
-export declare function buildJudgeUserPrompt(specialistResults: SpecialistResult[], pr: PullRequestData, sharedContext: string): string;
+export declare function buildJudgeDedupSystemPrompt(config: ReviewConfig): string;
+export declare function buildJudgeDedupUserPrompt(allFindings: Finding[]): string;
+export declare function buildJudgeRewriteSystemPrompt(config: ReviewConfig): string;
+export declare function buildJudgeRewriteUserPrompt(dedupedFindings: Finding[], pr: PullRequestData): string;
+/** Collect all findings from specialist results, attaching category from each agent. */
+export declare function collectSpecialistFindings(specialistResults: SpecialistResult[]): Finding[];
+/** @deprecated Use buildJudgeDedupSystemPrompt / buildJudgeRewriteSystemPrompt */
+export declare function buildJudgeSystemPrompt(config: ReviewConfig, _enabledCategories: string[]): string;
+/** @deprecated Use buildJudgeDedupUserPrompt / buildJudgeRewriteUserPrompt */
+export declare function buildJudgeUserPrompt(specialistResults: SpecialistResult[], pr: PullRequestData, _sharedContext: string): string;
 //# sourceMappingURL=prompts.d.ts.map

@@ -20,7 +20,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createProvider } from '../providers';
-import { buildSharedContext, buildSpecialistUserPrompt, buildJudgeUserPrompt, buildJudgeSystemPrompt, buildSpecialistSystemPrompt } from '../agents/prompts';
+import { buildSharedContext, buildSpecialistUserPrompt, buildSpecialistSystemPrompt } from '../agents/prompts';
 import { parseSpecialistFindings, parseStructuredReview } from '../findings';
 import { runJudge } from '../agents/judge';
 import type { PullRequestData } from '../github';

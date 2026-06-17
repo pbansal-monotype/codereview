@@ -23,5 +23,10 @@ export declare function parseStructuredReview(raw: string): StructuredReview;
  */
 export declare function parseSpecialistFindings(raw: string, categoryId: string): Finding[];
 export declare function hasCriticalFindings(review: StructuredReview): boolean;
+export declare function sortFindingsForReview(findings: Finding[]): Finding[];
+/**
+ * Parse output from the judge dedup agent — a bare JSON array of findings.
+ */
+export declare function parseDedupedFindings(raw: string): Finding[];
 export declare function extractJson(text: string): string;
 export declare function formatFindingsMarkdown(structured: StructuredReview, categoryLabels: Record<string, string>): string;
