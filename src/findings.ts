@@ -153,19 +153,17 @@ export function sortFindingsForReview(findings: Finding[]): Finding[] {
 }
 
 /**
- * Parse output from the judge dedup agent — a bare JSON array of findings.
+ * Parse output from the judge dedup agent.
+ * Accepts { "findings": [...] } (required by OpenAI/Azure json_object mode) or a bare array.
  */
 export function parseDedupedFindings(raw: string): Finding[] {
   const json = extractJson(raw);
   const parsed = JSON.parse(json) as unknown;
-
-  if (!Array.isArray(parsed)) {
-    throw new Error('Dedup agent output must be a JSON array');
-  }
+  const items = coerceFindingsArray(parsed);
 
   const findings: Finding[] = [];
 
-  for (const item of parsed) {
+  for (const item of items) {
     if (!item || typeof item !== 'object') continue;
     const f = item as Partial<Finding>;
     const severity = String(f.severity ?? '').toLowerCase();
@@ -190,6 +188,18 @@ export function parseDedupedFindings(raw: string): Finding[] {
   }
 
   return findings;
+}
+
+function coerceFindingsArray(parsed: unknown): unknown[] {
+  if (Array.isArray(parsed)) return parsed;
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    Array.isArray((parsed as { findings?: unknown }).findings)
+  ) {
+    return (parsed as { findings: unknown[] }).findings;
+  }
+  throw new Error('Dedup agent output must be a JSON array or { "findings": [...] } object');
 }
 
 export function extractJson(text: string): string {

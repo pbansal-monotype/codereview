@@ -25,7 +25,8 @@ export declare function parseSpecialistFindings(raw: string, categoryId: string)
 export declare function hasCriticalFindings(review: StructuredReview): boolean;
 export declare function sortFindingsForReview(findings: Finding[]): Finding[];
 /**
- * Parse output from the judge dedup agent — a bare JSON array of findings.
+ * Parse output from the judge dedup agent.
+ * Accepts { "findings": [...] } (required by OpenAI/Azure json_object mode) or a bare array.
  */
 export declare function parseDedupedFindings(raw: string): Finding[];
 export declare function extractJson(text: string): string;

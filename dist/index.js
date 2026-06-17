@@ -36490,7 +36490,7 @@ function buildJudgeDedupUserPrompt(allFindings) {
     return `## Input Findings
 ${JSON.stringify(allFindings, null, 2)}
 
-Return a single valid JSON array of deduplicated findings. Preserve all fields from the input exactly.`;
+Return a single valid JSON object with a "findings" array of deduplicated findings. Preserve all fields from the input exactly.`;
 }
 function buildJudgeRewriteSystemPrompt(config) {
     let prompt = INJECTION_GUARD;
@@ -36743,19 +36743,21 @@ function getSpecialistJsonInstruction() {
 }
 const JUDGE_DEDUP_JSON_INSTRUCTION = `
 You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fence. Schema:
-[
-  {
-    "category": "<category_id>",
-    "severity": "critical" | "warning" | "suggestion",
-    "confidence": "high" | "medium" | "low",
-    "file": "path/to/file.ts",
-    "line": 42,
-    "codeSnippet": "verbatim 1-3 line excerpt of the problematic code",
-    "message": "..."
-  }
-]
+{
+  "findings": [
+    {
+      "category": "<category_id>",
+      "severity": "critical" | "warning" | "suggestion",
+      "confidence": "high" | "medium" | "low",
+      "file": "path/to/file.ts",
+      "line": 42,
+      "codeSnippet": "verbatim 1-3 line excerpt of the problematic code",
+      "message": "..."
+    }
+  ]
+}
 
-Return a single valid JSON array. No markdown. No text outside the JSON.`;
+Return a single valid JSON object with a "findings" array. No markdown. No text outside the JSON.`;
 const JUDGE_REWRITE_JSON_INSTRUCTION = `
 You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fence. Schema:
 {
@@ -37595,16 +37597,15 @@ function sortFindingsForReview(findings) {
     });
 }
 /**
- * Parse output from the judge dedup agent — a bare JSON array of findings.
+ * Parse output from the judge dedup agent.
+ * Accepts { "findings": [...] } (required by OpenAI/Azure json_object mode) or a bare array.
  */
 function parseDedupedFindings(raw) {
     const json = extractJson(raw);
     const parsed = JSON.parse(json);
-    if (!Array.isArray(parsed)) {
-        throw new Error('Dedup agent output must be a JSON array');
-    }
+    const items = coerceFindingsArray(parsed);
     const findings = [];
-    for (const item of parsed) {
+    for (const item of items) {
         if (!item || typeof item !== 'object')
             continue;
         const f = item;
@@ -37631,6 +37632,16 @@ function parseDedupedFindings(raw) {
         });
     }
     return findings;
+}
+function coerceFindingsArray(parsed) {
+    if (Array.isArray(parsed))
+        return parsed;
+    if (parsed &&
+        typeof parsed === 'object' &&
+        Array.isArray(parsed.findings)) {
+        return parsed.findings;
+    }
+    throw new Error('Dedup agent output must be a JSON array or { "findings": [...] } object');
 }
 function extractJson(text) {
     const trimmed = text.trim();

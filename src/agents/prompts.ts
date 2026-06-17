@@ -204,7 +204,7 @@ export function buildJudgeDedupUserPrompt(allFindings: Finding[]): string {
   return `## Input Findings
 ${JSON.stringify(allFindings, null, 2)}
 
-Return a single valid JSON array of deduplicated findings. Preserve all fields from the input exactly.`;
+Return a single valid JSON object with a "findings" array of deduplicated findings. Preserve all fields from the input exactly.`;
 }
 
 export function buildJudgeRewriteSystemPrompt(config: ReviewConfig): string {

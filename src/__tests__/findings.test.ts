@@ -190,10 +190,29 @@ describe('parseDedupedFindings', () => {
     assert.equal(findings[0].codeSnippet, 'const x = 1;');
   });
 
-  it('throws when output is not an array', () => {
+  it('parses a { findings: [...] } object', () => {
+    const raw = JSON.stringify({
+      findings: [
+        {
+          category: 'security',
+          severity: 'critical',
+          confidence: 'high',
+          file: 'src/auth.ts',
+          line: 10,
+          codeSnippet: 'const x = 1;',
+          message: 'Missing auth check',
+        },
+      ],
+    });
+    const findings = parseDedupedFindings(raw);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].category, 'security');
+  });
+
+  it('throws when output has no findings array', () => {
     assert.throws(
-      () => parseDedupedFindings('{"summary":"ok","findings":[]}'),
-      /JSON array/i,
+      () => parseDedupedFindings('{"summary":"ok"}'),
+      /findings/i,
     );
   });
 });

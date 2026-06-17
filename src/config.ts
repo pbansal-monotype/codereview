@@ -95,19 +95,21 @@ export function getSpecialistJsonInstruction(): string {
 
 const JUDGE_DEDUP_JSON_INSTRUCTION = `
 You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fence. Schema:
-[
-  {
-    "category": "<category_id>",
-    "severity": "critical" | "warning" | "suggestion",
-    "confidence": "high" | "medium" | "low",
-    "file": "path/to/file.ts",
-    "line": 42,
-    "codeSnippet": "verbatim 1-3 line excerpt of the problematic code",
-    "message": "..."
-  }
-]
+{
+  "findings": [
+    {
+      "category": "<category_id>",
+      "severity": "critical" | "warning" | "suggestion",
+      "confidence": "high" | "medium" | "low",
+      "file": "path/to/file.ts",
+      "line": 42,
+      "codeSnippet": "verbatim 1-3 line excerpt of the problematic code",
+      "message": "..."
+    }
+  ]
+}
 
-Return a single valid JSON array. No markdown. No text outside the JSON.`;
+Return a single valid JSON object with a "findings" array. No markdown. No text outside the JSON.`;
 
 const JUDGE_REWRITE_JSON_INSTRUCTION = `
 You MUST respond with valid JSON. You may optionally wrap it in a \`\`\`json fence. Schema:
