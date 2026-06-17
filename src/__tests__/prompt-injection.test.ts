@@ -36,6 +36,7 @@ function makeConfig(overrides: Partial<ReviewConfig> = {}): ReviewConfig {
     provider: 'anthropic',
     apiKey: 'test',
     model: 'claude-test',
+    azureEndpoint: '',
     githubToken: 'test',
     categories: {
       security: { enabled: true, guidelines: 'Check for vulnerabilities.' },

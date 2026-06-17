@@ -8,9 +8,11 @@ export interface CategoryGuidelines {
 }
 
 export interface ReviewConfig {
-  provider: 'anthropic' | 'openai';
+  provider: 'anthropic' | 'openai' | 'azure';
   apiKey: string;
   model: string;
+  /** Required when provider is "azure". Bare resource endpoint or full deployment URL. */
+  azureEndpoint: string;
   githubToken: string;
   categories: {
     security: CategoryGuidelines;
@@ -36,6 +38,7 @@ export interface ReviewConfig {
 const DEFAULT_MODELS: Record<string, string> = {
   anthropic: 'claude-sonnet-4-20250514',
   openai: 'gpt-4o',
+  azure: 'gpt-5.4-nano',
 };
 
 /** Token budget helpers — rough estimate: 1 token ≈ 4 characters of English/code text. */
@@ -144,6 +147,7 @@ const ENV_VAR_NAMES: Record<string, string> = {
   context_files: 'CONTEXT_FILES',
   max_file_size: 'MAX_FILE_SIZE',
   github_token: 'GITHUB_TOKEN',
+  azure_endpoint: 'AZURE_ENDPOINT',
 };
 
 function resolve(inputName: string, fallback = ''): string {
@@ -153,9 +157,10 @@ function resolve(inputName: string, fallback = ''): string {
 const SECRET_NAMES: Record<string, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
+  azure: 'AZURE_API_KEY',
 };
 
-function resolveApiKey(provider: 'anthropic' | 'openai'): string {
+function resolveApiKey(provider: 'anthropic' | 'openai' | 'azure'): string {
   const fromInput = core.getInput('api_key');
   if (fromInput) return fromInput;
 
@@ -169,10 +174,10 @@ function resolveApiKey(provider: 'anthropic' | 'openai'): string {
 }
 
 export function loadConfig(): ReviewConfig {
-  const provider = resolve('provider', 'anthropic') as 'anthropic' | 'openai';
+  const provider = resolve('provider', 'anthropic') as 'anthropic' | 'openai' | 'azure';
 
-  if (provider !== 'anthropic' && provider !== 'openai') {
-    throw new Error(`Invalid provider "${provider}". Use "anthropic" or "openai".`);
+  if (provider !== 'anthropic' && provider !== 'openai' && provider !== 'azure') {
+    throw new Error(`Invalid provider "${provider}". Use "anthropic", "openai", or "azure".`);
   }
 
   const model = resolve('model') || DEFAULT_MODELS[provider];
@@ -198,12 +203,20 @@ export function loadConfig(): ReviewConfig {
     throw new Error('No github_token provided and GITHUB_TOKEN env var is not set.');
   }
 
+  const azureEndpoint = resolve('azure_endpoint');
+  if (provider === 'azure' && !azureEndpoint) {
+    throw new Error(
+      'Provider "azure" requires an endpoint URL. Set the "azure_endpoint" input or AZURE_ENDPOINT env var.',
+    );
+  }
+
   const timeoutSec = parseInt(resolve('timeout', '120'), 10);
 
   return {
     provider,
     apiKey,
     model,
+    azureEndpoint,
     githubToken,
     categories: {
       security: resolveGuidelines('security'),

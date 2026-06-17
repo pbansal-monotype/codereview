@@ -46,6 +46,7 @@ function makeMinimalConfig(apiKey: string): ReviewConfig {
     provider: 'anthropic',
     apiKey,
     model: 'claude-sonnet-4-20250514',
+    azureEndpoint: '',
     githubToken: '',
     categories: {
       security: { enabled: true, guidelines: 'Check for injection, XSS, secrets, auth gaps.' },
@@ -75,7 +76,7 @@ async function runSingleNoJudge(
   pr: PullRequestData,
   config: ReviewConfig,
 ): Promise<object> {
-  const provider = createProvider(config.provider, config.apiKey, config.model);
+  const provider = createProvider(config.provider, config.apiKey, config.model, config.azureEndpoint);
   const sharedContext = buildSharedContext(pr, config);
   // Single call: use the security specialist as a proxy for "one-shot" review.
   const systemPrompt = buildSpecialistSystemPrompt('security', config.categories.security.guidelines, config);
@@ -89,7 +90,7 @@ async function runSingleJudge(
   pr: PullRequestData,
   config: ReviewConfig,
 ): Promise<object> {
-  const provider = createProvider(config.provider, config.apiKey, config.model);
+  const provider = createProvider(config.provider, config.apiKey, config.model, config.azureEndpoint);
   const sharedContext = buildSharedContext(pr, config);
   const systemPrompt = buildSpecialistSystemPrompt('security', config.categories.security.guidelines, config);
   const userPrompt = buildSpecialistUserPrompt(sharedContext);
@@ -107,7 +108,7 @@ async function runFanoutNoJudge(
   pr: PullRequestData,
   config: ReviewConfig,
 ): Promise<object> {
-  const provider = createProvider(config.provider, config.apiKey, config.model);
+  const provider = createProvider(config.provider, config.apiKey, config.model, config.azureEndpoint);
   const enabledCategories = ['security', 'tests', 'performance', 'code'] as const;
   const sharedContext = buildSharedContext(pr, config);
   const testSharedContext = buildSharedContext(pr, config, true);
@@ -131,7 +132,7 @@ async function runFanoutJudge(
   pr: PullRequestData,
   config: ReviewConfig,
 ): Promise<object> {
-  const provider = createProvider(config.provider, config.apiKey, config.model);
+  const provider = createProvider(config.provider, config.apiKey, config.model, config.azureEndpoint);
   const enabledCategories = ['security', 'tests', 'performance', 'code'] as const;
   const sharedContext = buildSharedContext(pr, config);
   const testSharedContext = buildSharedContext(pr, config, true);

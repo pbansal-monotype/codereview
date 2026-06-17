@@ -8,17 +8,22 @@ branding:
 
 inputs:
   provider:
-    description: 'AI provider to use: "anthropic" or "openai"'
+    description: 'AI provider to use: "anthropic", "openai", or "azure"'
     required: true
     default: 'anthropic'
 
   api_key:
-    description: 'API key for the AI provider. If not set, reads from ANTHROPIC_API_KEY or OPENAI_API_KEY secret automatically based on provider.'
+    description: 'API key for the AI provider. If not set, reads from ANTHROPIC_API_KEY, OPENAI_API_KEY, or AZURE_API_KEY secret automatically based on provider.'
+    required: false
+    default: ''
+
+  azure_endpoint:
+    description: 'Azure OpenAI endpoint URL (required when provider is "azure"). Accepts the full deployment URL (e.g. https://<resource>.cognitiveservices.azure.com/openai/deployments/<deployment>/chat/completions?api-version=...) or just the bare resource URL. Can also be set via the AZURE_ENDPOINT env var.'
     required: false
     default: ''
 
   model:
-    description: 'Model to use (e.g. "claude-sonnet-4-20250514" for Anthropic, "gpt-4o" for OpenAI)'
+    description: 'Model to use. For Azure, this is the deployment name (e.g. "gpt-5.4-nano"). For Anthropic: "claude-sonnet-4-20250514". For OpenAI: "gpt-4o".'
     required: false
     default: ''
 

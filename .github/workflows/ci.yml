@@ -7,17 +7,21 @@ on:
   workflow_call:
     inputs:
       provider:
-        description: 'AI provider: anthropic or openai'
+        description: 'AI provider: anthropic, openai, or azure'
         type: string
         default: 'anthropic'
       model:
-        description: 'Model override'
+        description: 'Model override (or Azure deployment name)'
+        type: string
+        default: ''
+      azure_endpoint:
+        description: 'Azure OpenAI endpoint URL (required when provider is azure)'
         type: string
         default: ''
       review_categories:
         description: 'Comma-separated categories to review'
         type: string
-        default: 'security,tests,performance,cost'
+        default: 'security,tests,performance,code'
       fail_on_critical:
         description: 'Fail CI on critical findings'
         type: string
@@ -42,8 +46,8 @@ on:
         description: 'Custom performance guidelines'
         type: string
         default: ''
-      cost_guidelines:
-        description: 'Custom cost guidelines'
+      code_guidelines:
+        description: 'Custom code quality guidelines'
         type: string
         default: ''
       post_inline_comments:
@@ -103,6 +107,7 @@ jobs:
     env:
       ANTHROPIC_API_KEY: ${{ secrets.api_key || secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.api_key || secrets.OPENAI_API_KEY }}
+      AZURE_API_KEY: ${{ secrets.api_key || secrets.AZURE_API_KEY }}
       GITHUB_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
@@ -112,17 +117,18 @@ jobs:
         uses: ./
         with:
           github_token: ${{ github.token }}
-          api_key: ${{ secrets.api_key || secrets.OPENAI_API_KEY || secrets.ANTHROPIC_API_KEY }}
+          api_key: ${{ secrets.api_key || secrets.ANTHROPIC_API_KEY || secrets.OPENAI_API_KEY || secrets.AZURE_API_KEY }}
           provider: ${{ inputs.provider || 'anthropic' }}
           model: ${{ inputs.model || '' }}
-          review_categories: ${{ inputs.review_categories || 'security,tests,performance,cost' }}
+          azure_endpoint: ${{ inputs.azure_endpoint || '' }}
+          review_categories: ${{ inputs.review_categories || 'security,tests,performance,code' }}
           fail_on_critical: ${{ inputs.fail_on_critical || 'false' }}
           custom_prompt: ${{ inputs.custom_prompt || '' }}
           extra_instructions: ${{ inputs.extra_instructions || '' }}
           security_guidelines: ${{ inputs.security_guidelines || '' }}
           test_guidelines: ${{ inputs.test_guidelines || '' }}
           performance_guidelines: ${{ inputs.performance_guidelines || '' }}
-          cost_guidelines: ${{ inputs.cost_guidelines || '' }}
+          code_guidelines: ${{ inputs.code_guidelines || '' }}
           post_inline_comments: ${{ inputs.post_inline_comments || 'true' }}
           ignore_paths: ${{ inputs.ignore_paths || '' }}
           context_files: ${{ inputs.context_files || '' }}

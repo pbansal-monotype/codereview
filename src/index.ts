@@ -14,7 +14,7 @@ async function main(): Promise<void> {
     const config = loadConfig();
     core.info(`Provider: ${config.provider} | Model: ${config.model}`);
 
-    const provider = createProvider(config.provider, config.apiKey, config.model);
+    const provider = createProvider(config.provider, config.apiKey, config.model, config.azureEndpoint);
 
     core.info('Fetching PR data...');
     const pr = await getPullRequestData(config.githubToken, {

@@ -1,6 +1,6 @@
 # AI PR Reviewer
 
-A GitHub Action that uses **Claude (Anthropic)** or **OpenAI** to review pull requests with a **multi-agent architecture** — parallel specialist agents for security, test coverage, performance, and code quality, followed by a judge agent that verifies and filters findings.
+A GitHub Action that uses **Claude (Anthropic)**, **OpenAI**, or **Azure OpenAI** to review pull requests with a **multi-agent architecture** — parallel specialist agents for security, test coverage, performance, and code quality, followed by a judge agent that verifies and filters findings.
 
 ## How it works
 
@@ -27,9 +27,11 @@ Each specialist is a focused expert that reviews the **complete function/API** i
 
 ## Quick start
 
-**1. Add `ANTHROPIC_API_KEY`** (or `OPENAI_API_KEY`) as a secret in your repo or org (Settings > Secrets).
+### Anthropic (Claude)
 
-**2. Create `.github/workflows/pr-review.yml`**:
+**1.** Add `ANTHROPIC_API_KEY` as a repository secret (Settings → Secrets and variables → Actions).
+
+**2.** Create `.github/workflows/pr-review.yml`:
 
 ```yaml
 name: AI PR Review
@@ -45,21 +47,43 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
-    env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: pbansal-monotype/codereview@main
         with:
-          provider: 'openai'
+          provider: anthropic
           review_categories: 'security,tests,performance,code'
           fail_on_critical: 'true'
           custom_prompt: |
             This is a Node.js microservice using Express and PostgreSQL.
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-That's it. Every PR now gets a multi-agent AI review.
+### OpenAI
+
+```yaml
+- uses: pbansal-monotype/codereview@main
+  with:
+    provider: openai
+    model: gpt-4o
+  env:
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+```
+
+### Azure OpenAI
+
+```yaml
+- uses: pbansal-monotype/codereview@main
+  with:
+    provider: azure
+    azure_endpoint: 'https://<resource>.cognitiveservices.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-12-01-preview'
+    model: gpt-5.4-nano   # must match your deployment name
+  env:
+    AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+```
+
+`azure_endpoint` accepts either the full deployment URL (as shown above) or just the bare resource URL (`https://<resource>.cognitiveservices.azure.com`). The API version and deployment name are parsed automatically from the URL.
 
 ## Review categories
 
@@ -77,19 +101,22 @@ Each specialist reviews the **complete function or API** being changed — not j
 
 The system has multiple layers to prevent low-quality findings:
 
-1. **Specialist-level**: Max 4 findings each, must include file + line + evidence
-2. **Judge-level**: Verifies findings against the diff, deduplicates, re-calibrates severity
-3. **Code-level filters**: Drops low-confidence findings, vague messages ("Ensure...", "Consider..."), and caps total at 8
-4. **Severity calibration**: "critical" = would you page the on-call at 3am? If not, it's downgraded.
+1. **Injection guard**: PR title, body, diff, and file contents are wrapped in named delimiters (`<pr_description>`, `<diff>`, `<file>`). Every system prompt instructs the model to analyze those delimiters and never follow instructions inside them.
+2. **Specialist-level**: Must include a verbatim code snippet per finding; low-confidence findings are dropped before reaching the judge.
+3. **Judge-level**: Verifies each finding's code snippet against the actual diff, deduplicates, re-calibrates severity, removes confidence "low" findings, and caps the total at 8.
+4. **Code-level filters**: Drops vague messages ("Ensure...", "Consider...") and findings without a file path.
+5. **Severity calibration (shared scale)**: "critical" = would you page the on-call at 3 am? "warning" = real bug, not urgent. "suggestion" = concrete improvement with specific code. The exact same scale is used by every specialist and the judge.
+6. **Honest failure reporting**: A crashed specialist appears as a visible warning in the PR comment — it can never silently read as a clean pass. A judge failure is fail-closed (blocks merge) rather than publishing unverified findings.
 
 ## Inputs
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `provider` | No | `anthropic` | `anthropic` or `openai` |
-| `api_key` | No | — | API key (falls back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env var) |
+| `provider` | No | `anthropic` | `anthropic`, `openai`, or `azure` |
+| `api_key` | No | — | API key (falls back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `AZURE_API_KEY` env var) |
+| `azure_endpoint` | No | — | **Required for `azure` provider.** Full deployment URL or bare resource endpoint. Also readable from `AZURE_ENDPOINT` env var. |
 | `github_token` | No | `${{ github.token }}` | GitHub token for PR access |
-| `model` | No | auto | Model name (`claude-sonnet-4-20250514` / `gpt-4o`) |
+| `model` | No | auto | Model name or Azure deployment name (`claude-sonnet-4-20250514` / `gpt-4o` / `gpt-5.4-nano`) |
 | `review_categories` | No | `security,tests,performance,code` | Comma-separated categories |
 | `security_guidelines` | No | built-in | Custom security review rules |
 | `test_guidelines` | No | built-in | Custom test coverage review rules |
@@ -119,7 +146,7 @@ Each category has built-in guidelines that work out of the box. Override any cat
 ```yaml
 - uses: pbansal-monotype/codereview@main
   with:
-    provider: 'anthropic'
+    provider: anthropic
     security_guidelines: |
       Focus on OWASP Top 10. We use Helmet.js for HTTP headers.
       Our auth middleware is in src/middleware/auth.ts — check new routes use it.
@@ -136,7 +163,10 @@ GitHub does not auto-expose secrets as env vars. Map them explicitly:
 
 ```yaml
 env:
-  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  # or for Azure:
+  AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+  AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
   SECURITY_GUIDELINES: ${{ vars.SECURITY_GUIDELINES }}
   EXTRA_INSTRUCTIONS: ${{ vars.EXTRA_INSTRUCTIONS }}
 ```
@@ -149,7 +179,8 @@ env:
 | `provider` | `REVIEW_PROVIDER` |
 | `model` | `REVIEW_MODEL` |
 | `review_categories` | `REVIEW_CATEGORIES` |
-| `api_key` | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` |
+| `api_key` | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `AZURE_API_KEY` |
+| `azure_endpoint` | `AZURE_ENDPOINT` |
 | `github_token` | `GITHUB_TOKEN` |
 | `security_guidelines` | `SECURITY_GUIDELINES` |
 | `test_guidelines` | `TEST_GUIDELINES` |
@@ -189,16 +220,22 @@ src/
 │   │   ├── tests.ts
 │   │   ├── performance.ts
 │   │   └── code-guidelines.ts
-│   ├── prompts.ts           # All prompt builders (specialist + judge)
+│   ├── prompts.ts           # All prompt builders (specialist + judge, with injection guards)
 │   ├── specialist.ts        # Specialist agent runner
-│   ├── judge.ts             # Judge agent runner
+│   ├── judge.ts             # Judge agent runner (fail-closed, retry-on-parse-failure)
 │   ├── format.ts            # Markdown formatting for PR comments
 │   ├── orchestrator.ts      # Parallel fan-out → judge → result
 │   └── types.ts             # Shared types
 ├── providers/               # LLM provider implementations
-│   ├── anthropic.ts
-│   └── openai.ts
-├── config.ts                # Config loading & JSON instructions
+│   ├── anthropic.ts         # Supports cache_control blocks for prompt caching
+│   ├── openai.ts
+│   └── azure.ts             # Azure OpenAI via AzureOpenAI client
+├── eval/                    # Evaluation harness (precision/recall, topology comparison)
+│   ├── inject-defects.ts
+│   ├── run-topologies.ts
+│   ├── score.ts
+│   └── fixtures/
+├── config.ts                # Config loading, JSON instructions, severity rubric
 ├── findings.ts              # Finding parsing, validation & quality filtering
 ├── github.ts                # PR data fetching & comment posting
 └── index.ts                 # Entry point
