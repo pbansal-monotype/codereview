@@ -37084,6 +37084,7 @@ exports.THRESHOLDS = {
     HIGH_RISK: 0.6,
     MEDIUM_RISK: 0.3,
 };
+const NEW_FILE_BOOST = 0.15;
 exports.RISK_PATH_PATTERNS = [
     { pattern: /auth|login|logout|session|token|jwt|oauth|saml|sso|password|credential/i, score: 0.95 },
     { pattern: /payment|billing|stripe|wallet|invoice|checkout|subscription/i, score: 0.95 },
@@ -37091,7 +37092,7 @@ exports.RISK_PATH_PATTERNS = [
     { pattern: /admin|internal|privileged|superuser|sudo/i, score: 0.85 },
     { pattern: /migration|schema|seed|db\/|database\//i, score: 0.80 },
     { pattern: /config\/|settings\./i, score: 0.75 },
-    { pattern: /middleware|interceptor|guard|policy/i, score: 0.75 },
+    { pattern: /middleware|interceptor|guard|policy|module|lib|library|util|helper|utils|common|shared/i, score: 0.75 },
     { pattern: /router|controller|handler|service|repository/i, score: 0.60 },
     { pattern: /index\.(js|ts|py|go|java|rb|php|c|cpp|h|swift|kt)$/i, score: 0.55 },
     { pattern: /\.env\.example$/i, score: 0.35 },
@@ -37124,13 +37125,25 @@ function scoreFile(filePath, diffHunk, options = {}) {
     const deletions = (diffHunk.match(/^-[^-]/gm) ?? []).length;
     if (additions === 0 && deletions > 0)
         score = Math.max(0.0, score - 0.1);
+    if (options.isNew) {
+        score = Math.min(1.0, score + NEW_FILE_BOOST);
+        // New unpatterned source files (baseline 0.4) land at 0.55 after boost — floor to
+        // HIGH_RISK so new logic files get diff+content. Skip low-priority patterned files.
+        const isLowPriority = patternScore !== null && patternScore <= 0.35;
+        if (patternScore === null && !isLowPriority && score < exports.THRESHOLDS.HIGH_RISK) {
+            score = exports.THRESHOLDS.HIGH_RISK;
+        }
+    }
     return Math.min(1.0, score);
 }
 // ─── Context budget allocation ──────────────────────────────────────
 function buildReviewContext(rawDiff, fileContents, charBudget, options = {}) {
     const files = splitDiffByFile(rawDiff);
     const scored = files
-        .map((f) => ({ ...f, score: scoreFile(f.filePath, f.diffHunk, options) }))
+        .map((f) => ({
+        ...f,
+        score: scoreFile(f.filePath, f.diffHunk, { ...options, isNew: f.isNew }),
+    }))
         .sort((a, b) => b.score - a.score);
     const included = [];
     const skipped = [];
@@ -37287,6 +37300,13 @@ const DEFAULT_IGNORE_PATTERNS = [
     '**/*.ttf',
     '**/*.pdf',
     '**/*.zip',
+    // env files
+    '**/*.env',
+    '**/*.env.example',
+    '**/*.env.*',
+    '**/*.env.*.*',
+    '**/*.env.*.*.*',
+    '**/*.env.*.*.*.*',
 ];
 function globToRegex(glob) {
     const escaped = glob
