@@ -3,9 +3,11 @@ export interface CategoryGuidelines {
     guidelines: string;
 }
 export interface ReviewConfig {
-    provider: 'anthropic' | 'openai';
+    provider: 'anthropic' | 'openai' | 'azure';
     apiKey: string;
     model: string;
+    /** Required when provider is "azure". Bare resource endpoint or full deployment URL. */
+    azureEndpoint: string;
     githubToken: string;
     categories: {
         security: CategoryGuidelines;

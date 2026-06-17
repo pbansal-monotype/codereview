@@ -36741,6 +36741,7 @@ const guidelines_1 = __nccwpck_require__(5428);
 const DEFAULT_MODELS = {
     anthropic: 'claude-sonnet-4-20250514',
     openai: 'gpt-4o',
+    azure: 'gpt-5.4-nano',
 };
 /** Token budget helpers — rough estimate: 1 token ≈ 4 characters of English/code text. */
 function charsToTokens(chars) {
@@ -36840,6 +36841,7 @@ const ENV_VAR_NAMES = {
     context_files: 'CONTEXT_FILES',
     max_file_size: 'MAX_FILE_SIZE',
     github_token: 'GITHUB_TOKEN',
+    azure_endpoint: 'AZURE_ENDPOINT',
 };
 function resolve(inputName, fallback = '') {
     return core.getInput(inputName) || process.env[ENV_VAR_NAMES[inputName]] || fallback;
@@ -36847,6 +36849,7 @@ function resolve(inputName, fallback = '') {
 const SECRET_NAMES = {
     anthropic: 'ANTHROPIC_API_KEY',
     openai: 'OPENAI_API_KEY',
+    azure: 'AZURE_API_KEY',
 };
 function resolveApiKey(provider) {
     const fromInput = core.getInput('api_key');
@@ -36860,8 +36863,8 @@ function resolveApiKey(provider) {
 }
 function loadConfig() {
     const provider = resolve('provider', 'anthropic');
-    if (provider !== 'anthropic' && provider !== 'openai') {
-        throw new Error(`Invalid provider "${provider}". Use "anthropic" or "openai".`);
+    if (provider !== 'anthropic' && provider !== 'openai' && provider !== 'azure') {
+        throw new Error(`Invalid provider "${provider}". Use "anthropic", "openai", or "azure".`);
     }
     const model = resolve('model') || DEFAULT_MODELS[provider];
     const enabledCategories = resolve('review_categories', 'security,tests,performance,code')
@@ -36881,11 +36884,16 @@ function loadConfig() {
     if (!githubToken) {
         throw new Error('No github_token provided and GITHUB_TOKEN env var is not set.');
     }
+    const azureEndpoint = resolve('azure_endpoint');
+    if (provider === 'azure' && !azureEndpoint) {
+        throw new Error('Provider "azure" requires an endpoint URL. Set the "azure_endpoint" input or AZURE_ENDPOINT env var.');
+    }
     const timeoutSec = parseInt(resolve('timeout', '120'), 10);
     return {
         provider,
         apiKey,
         model,
+        azureEndpoint,
         githubToken,
         categories: {
             security: resolveGuidelines('security'),
@@ -37876,7 +37884,7 @@ async function main() {
         core.info('AI PR Reviewer starting...');
         const config = (0, config_1.loadConfig)();
         core.info(`Provider: ${config.provider} | Model: ${config.model}`);
-        const provider = (0, providers_1.createProvider)(config.provider, config.apiKey, config.model);
+        const provider = (0, providers_1.createProvider)(config.provider, config.apiKey, config.model, config.azureEndpoint);
         core.info('Fetching PR data...');
         const pr = await (0, github_1.getPullRequestData)(config.githubToken, {
             maxDiffSize: config.maxDiffSize,
@@ -37994,6 +38002,88 @@ exports.AnthropicProvider = AnthropicProvider;
 
 /***/ }),
 
+/***/ 581:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.AzureProvider = void 0;
+exports.parseAzureEndpoint = parseAzureEndpoint;
+const openai_1 = __nccwpck_require__(2583);
+const findings_1 = __nccwpck_require__(1001);
+const retry_1 = __nccwpck_require__(9809);
+const DEFAULT_API_VERSION = '2024-12-01-preview';
+/**
+ * Accepts either:
+ *   - A full Azure deployment URL:
+ *       https://<resource>.cognitiveservices.azure.com/openai/deployments/<deployment>/chat/completions?api-version=...
+ *   - A bare resource endpoint:
+ *       https://<resource>.cognitiveservices.azure.com
+ *
+ * Returns { endpoint, apiVersion } where endpoint is always the bare resource URL.
+ */
+function parseAzureEndpoint(raw) {
+    let url;
+    try {
+        url = new URL(raw);
+    }
+    catch {
+        throw new Error(`Invalid azure_endpoint URL: "${raw}"`);
+    }
+    const apiVersion = url.searchParams.get('api-version') ?? DEFAULT_API_VERSION;
+    // Strip everything after the origin (path, query, fragment) to get the bare endpoint.
+    const endpoint = url.origin;
+    return { endpoint, apiVersion };
+}
+class AzureProvider {
+    client;
+    deployment;
+    /**
+     * @param apiKey       Value of AZURE_API_KEY
+     * @param endpointUrl  Full deployment URL or bare resource endpoint
+     * @param deployment   Azure deployment name (the "model" identifier in Azure OpenAI)
+     */
+    constructor(apiKey, endpointUrl, deployment) {
+        const { endpoint, apiVersion } = parseAzureEndpoint(endpointUrl);
+        this.client = new openai_1.AzureOpenAI({ apiKey, endpoint, apiVersion });
+        this.deployment = deployment;
+    }
+    async review(request) {
+        const response = await (0, retry_1.withRetry)(() => this.client.chat.completions.create({
+            model: this.deployment,
+            max_tokens: 8192,
+            temperature: 0,
+            response_format: { type: 'json_object' },
+            messages: [
+                { role: 'system', content: request.systemPrompt },
+                { role: 'user', content: request.userPrompt },
+            ],
+        }), { timeoutMs: request.timeoutMs });
+        const text = response.choices[0]?.message?.content ?? '';
+        const inputTokens = response.usage?.prompt_tokens ?? 0;
+        const outputTokens = response.usage?.completion_tokens ?? 0;
+        let structured;
+        try {
+            structured = (0, findings_1.parseStructuredReview)(text);
+        }
+        catch {
+            // Fallback to raw text
+        }
+        return {
+            review: text,
+            structured,
+            tokensUsed: inputTokens + outputTokens,
+            inputTokens,
+            outputTokens,
+        };
+    }
+}
+exports.AzureProvider = AzureProvider;
+
+
+/***/ }),
+
 /***/ 7486:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
@@ -38003,14 +38093,21 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.createProvider = createProvider;
 const anthropic_1 = __nccwpck_require__(9222);
 const openai_1 = __nccwpck_require__(8238);
-function createProvider(provider, apiKey, model) {
+const azure_1 = __nccwpck_require__(581);
+function createProvider(provider, apiKey, model, azureEndpoint) {
     switch (provider) {
         case 'anthropic':
             return new anthropic_1.AnthropicProvider(apiKey, model);
         case 'openai':
             return new openai_1.OpenAIProvider(apiKey, model);
+        case 'azure': {
+            if (!azureEndpoint) {
+                throw new Error('Azure provider requires an endpoint URL. Set the "azure_endpoint" input or the AZURE_ENDPOINT env var.');
+            }
+            return new azure_1.AzureProvider(apiKey, azureEndpoint, model);
+        }
         default:
-            throw new Error(`Unsupported provider: ${provider}. Use "anthropic" or "openai".`);
+            throw new Error(`Unsupported provider: ${provider}. Use "anthropic", "openai", or "azure".`);
     }
 }
 
