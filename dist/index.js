@@ -36501,19 +36501,12 @@ Return a single valid JSON object with a "findings" array of deduplicated findin
 }
 function buildJudgeRewriteSystemPrompt(config) {
     let prompt = INJECTION_GUARD;
-    prompt += `You are rewriting code review finding messages into a consistent format.
+    prompt += `Rewrite the message field of this finding in exactly two sentences. Each sentence must be under 20 words. Do not change any other field.
 
-## Rules
+Sentence 1: What is wrong — name the specific function or variable and the broken behavior.
+Sentence 2: What to do — name the exact fix and where to apply it.
 
-Rewrite each finding's message field in exactly three sentences. Change only the message field. Do not change any other field. Do not add or remove findings.
-
-Sentence 1: Name the specific function, variable, or code construct that is broken or missing and state what it does wrong.
-Sentence 2: State the exact failure mode in production — what error is thrown, what is exploited, or what resource is exhausted — and under what condition.
-Sentence 3: State the exact code change required and where to make it.
-
-Banned phrases: "Ensure", "Consider", "Make sure", "It is recommended", "This could potentially", "You should", "It would be good to". If a sentence would start with a banned phrase, restructure it to start with the code subject instead.
-
-Sort findings: critical first, then warning, then suggestion. Within each severity group, sort alphabetically by file path.
+Do not explain why it matters. Do not repeat information from sentence 1 in sentence 2. Do not use: "Ensure", "Consider", "Make sure", "You should", "This could".
 
 ${(0, config_1.getJudgeRewriteJsonInstruction)()}`;
     if (config.extraInstructions) {
