@@ -30,6 +30,10 @@ const DEFAULT_IGNORE_PATTERNS = [
   '**/.gitattributes',
   // CI/CD config — workflow files, not application logic
   '**/.github/**',
+  // test fixtures and mocks — not application logic
+  '**/__mocks__/**',
+  '**/__fixtures__/**',
+  '**/*__testdata__*',
   // minified / bundled assets
   '**/*.min.js',
   '**/*.min.css',

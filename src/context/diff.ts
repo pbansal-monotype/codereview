@@ -65,12 +65,15 @@ export const TEST_PATH_PATTERNS = [
   /\.stories\.[^/]+$/,
   /\/fixtures\//,
   /\/mocks?\//,
+  /__testdata__/,
+  /__fixtures__/,
+  /__mocks?__/,
   /\/e2e\//,
   /\/cypress\//,
   /\/playwright\//,
 ];
 
-const TEST_FILE_PATTERN = /\.test\.|\.spec\.|__test__|__mock__|_test\./i;
+const TEST_FILE_LOW_SCORE = 0.2;
 const TEST_FILE_BOOSTED_SCORE = 0.8;
 
 export function isTestFile(filepath: string): boolean {
@@ -244,12 +247,12 @@ export const RISK_PATH_PATTERNS: RiskPattern[] = [
   { pattern: /secret|private.?key|api.?key|\.pem|\.pfx|\.p12/i,                         score: 0.95 },
   { pattern: /admin|internal|privileged|superuser|sudo/i,                               score: 0.85 },
   { pattern: /migration|schema|seed|db\/|database\//i,                                  score: 0.80 },
-  { pattern: /config\/|\.env|settings\./i,                                              score: 0.75 },
+  { pattern: /config\/|settings\./i,                                                     score: 0.75 },
   { pattern: /middleware|interceptor|guard|policy/i,                                    score: 0.75 },
   { pattern: /router|controller|handler|service|repository/i,                           score: 0.60 },
   { pattern: /index\.(js|ts|py|go|java|rb|php|c|cpp|h|swift|kt)$/i,                     score: 0.55 },
-  { pattern: TEST_FILE_PATTERN,                                                         score: 0.20 },
-  { pattern: /\.md$|README|CHANGELOG|LICENSE|docker|docs\//i,                           score: 0.05 },
+  { pattern: /\.env\.example$/i,                                                          score: 0.35 },
+  { pattern: /\.md$|README|CHANGELOG|LICENSE|docs\//i,                                  score: 0.05 },
   { pattern: /package-lock\.json|yarn\.lock|\.lock$|dist\/|build\//i,                   score: 0.00 },
 ];
 
@@ -258,15 +261,18 @@ export function scoreFile(
   diffHunk: string,
   options: BuildReviewContextOptions = {},
 ): number {
+  // Test files are handled separately — path patterns like "router" or "service"
+  // must not inflate test file scores above implementation files.
+  if (isTestFile(filePath)) {
+    return options.boostTestFiles ? TEST_FILE_BOOSTED_SCORE : TEST_FILE_LOW_SCORE;
+  }
+
   let patternScore: number | null = null;
 
   for (const { pattern, score: s } of RISK_PATH_PATTERNS) {
     if (pattern.test(filePath)) {
-      const effectiveScore =
-        options.boostTestFiles && pattern === TEST_FILE_PATTERN ? TEST_FILE_BOOSTED_SCORE : s;
-
-      if (patternScore === null || effectiveScore > patternScore) {
-        patternScore = effectiveScore;
+      if (patternScore === null || s > patternScore) {
+        patternScore = s;
       }
     }
   }

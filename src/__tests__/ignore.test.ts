@@ -22,6 +22,16 @@ describe('shouldIgnoreFile', () => {
       true,
     );
   });
+
+  it('ignores mocks and test fixtures', () => {
+    assert.equal(shouldIgnoreFile('__mocks__/module.js', []), true);
+    assert.equal(shouldIgnoreFile('src/foo/__testdata__.js', []), true);
+    assert.equal(shouldIgnoreFile('src/foo/__fixtures__/bar.js', []), true);
+  });
+
+  it('does not ignore .env.example — reviewed as diff-only via risk scorer', () => {
+    assert.equal(shouldIgnoreFile('.env.example', []), false);
+  });
 });
 
 describe('filterDiffByFiles', () => {
