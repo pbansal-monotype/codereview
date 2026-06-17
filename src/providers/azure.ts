@@ -49,7 +49,7 @@ export class AzureProvider implements AIProvider {
       () =>
         this.client.chat.completions.create({
           model: this.deployment,
-          max_tokens: 8192,
+          max_completion_tokens: 8192,
           temperature: 0,
           response_format: { type: 'json_object' },
           messages: [

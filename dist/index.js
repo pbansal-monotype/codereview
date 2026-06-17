@@ -38052,7 +38052,7 @@ class AzureProvider {
     async review(request) {
         const response = await (0, retry_1.withRetry)(() => this.client.chat.completions.create({
             model: this.deployment,
-            max_tokens: 8192,
+            max_completion_tokens: 8192,
             temperature: 0,
             response_format: { type: 'json_object' },
             messages: [
