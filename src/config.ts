@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { parseIgnorePatterns } from './ignore';
+import { parseIgnorePatterns } from './context/ignore';
 import { DEFAULT_GUIDELINES } from './agents/guidelines';
 
 export interface CategoryGuidelines {

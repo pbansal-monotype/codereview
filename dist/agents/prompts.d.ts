@@ -3,18 +3,13 @@ import { PullRequestData } from '../github';
 import { SpecialistResult } from './types';
 export declare const CATEGORY_LABELS: Record<string, string>;
 export declare function buildPrMetadata(pr: PullRequestData, config: ReviewConfig): string;
-interface FileSectionOptions {
-    /** When true, test files are sorted first instead of last (use for the tests specialist). */
-    prioritizeTests?: boolean;
-}
-export declare function buildFileContentsSection(pr: PullRequestData, budget: number, options?: FileSectionOptions): string;
 /**
- * Builds the shared context — PR metadata, full file contents, and the diff.
- * The diff is always included regardless of budget. File contents are dropped
- * gracefully when the budget runs out (with a logged warning).
+ * Builds the shared context — PR metadata, then the risk-scored file sections
+ * (each containing the diff hunk and, for high-risk files, the full file content).
  *
- * @param prioritizeTests  When true, test files appear first in the file
- *   contents section (used for the tests specialist).
+ * @param prioritizeTests  When true (tests specialist), test-file scores are boosted
+ *   so they receive high-priority treatment. When false (all other specialists),
+ *   test files fall below the medium-risk threshold and are skipped entirely.
  */
 export declare function buildSharedContext(pr: PullRequestData, config: ReviewConfig, prioritizeTests?: boolean): string;
 export declare function buildSpecialistSystemPrompt(categoryId: string, guidelines: string, config: ReviewConfig): string;
@@ -28,5 +23,4 @@ export declare function buildJudgeSystemPrompt(config: ReviewConfig, enabledCate
  * The judge receives the same context budget as the specialists (no truncation).
  */
 export declare function buildJudgeUserPrompt(specialistResults: SpecialistResult[], pr: PullRequestData, sharedContext: string): string;
-export {};
 //# sourceMappingURL=prompts.d.ts.map

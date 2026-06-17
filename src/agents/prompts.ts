@@ -9,6 +9,7 @@ import {
 } from '../config';
 import { PullRequestData } from '../github';
 import { SpecialistResult } from './types';
+import { buildReviewContext, buildFileSummary } from '../context/diff';
 
 export const CATEGORY_LABELS: Record<string, string> = {
   security: 'Security',
@@ -67,87 +68,6 @@ export function buildPrMetadata(
   return prompt;
 }
 
-const TEST_PATH_PATTERNS = [
-  /__tests__\//,
-  /\.(test|spec)\.[^/]+$/,
-  /\/test\//,
-  /\/tests\//,
-  /\/testing\//,
-  /\.stories\.[^/]+$/,
-  /\/fixtures\//,
-  /\/mocks?\//,
-  /\/e2e\//,
-  /\/cypress\//,
-  /\/playwright\//,
-];
-
-function isTestFile(filepath: string): boolean {
-  return TEST_PATH_PATTERNS.some((pattern) => pattern.test(filepath));
-}
-
-interface FileSectionOptions {
-  /** When true, test files are sorted first instead of last (use for the tests specialist). */
-  prioritizeTests?: boolean;
-}
-
-export function buildFileContentsSection(
-  pr: PullRequestData,
-  budget: number,
-  options: FileSectionOptions = {},
-): string {
-  if (pr.fileContents.length === 0) return '';
-
-  if (budget <= 500) {
-    core.warning(
-      `File context budget exhausted (budget=${budget} chars) — running in diff-only mode. ` +
-        `Increase MAX_PROMPT_TOKENS or reduce the number of active specialists if file context is needed.`,
-    );
-    return '';
-  }
-
-  const { prioritizeTests = false } = options;
-
-  const sortedFiles = [...pr.fileContents].sort((a, b) => {
-    const aIsTest = isTestFile(a.path) ? 1 : 0;
-    const bIsTest = isTestFile(b.path) ? 1 : 0;
-    // prioritizeTests=true  → test files sort before source files (aIsTest - bIsTest reversed)
-    // prioritizeTests=false → test files sort after source files (default)
-    return prioritizeTests ? bIsTest - aIsTest : aIsTest - bIsTest;
-  });
-
-  let section = `\n## Full File Contents\n`;
-  section += `IMPORTANT: Read these carefully. They show the complete code surrounding the changes.\n`;
-  section += `Use them to understand:\n`;
-  section += `- The full function/class/module the change lives in\n`;
-  section += `- What patterns sibling functions use (auth, error handling, validation)\n`;
-  section += `- How data flows through imports, types, and helper functions\n`;
-  section += `- Whether the changed code is consistent with the rest of the file\n\n`;
-
-  let fileCharsUsed = 0;
-  let filesIncluded = 0;
-  for (const file of sortedFiles) {
-    const dotIndex = file.path.lastIndexOf('.');
-    const ext = dotIndex >= 0 ? file.path.slice(dotIndex + 1) : '';
-    const block =
-      `<file path="${file.path}"${file.truncated ? ' truncated="true"' : ''}>\n` +
-      `\`\`\`${ext}\n${file.content}\n\`\`\`\n` +
-      `</file>\n\n`;
-    if (fileCharsUsed + block.length > budget) {
-      const remaining = sortedFiles.length - filesIncluded;
-      core.warning(
-        `Prompt budget exceeded (budget=${budget} chars). ` +
-          `Dropped ${remaining} file(s) from context ` +
-          `(${prioritizeTests ? 'source' : 'test'} files deprioritized).`,
-      );
-      break;
-    }
-    section += block;
-    fileCharsUsed += block.length;
-    filesIncluded++;
-  }
-
-  return section;
-}
 
 // ─── Shared context (built once per specialist-type, reused) ───────
 
@@ -161,29 +81,41 @@ Step 4: Only create findings for genuine problems you can prove with specific co
 Return JSON.`;
 
 /**
- * Builds the shared context — PR metadata, full file contents, and the diff.
- * The diff is always included regardless of budget. File contents are dropped
- * gracefully when the budget runs out (with a logged warning).
+ * Builds the shared context — PR metadata, then the risk-scored file sections
+ * (each containing the diff hunk and, for high-risk files, the full file content).
  *
- * @param prioritizeTests  When true, test files appear first in the file
- *   contents section (used for the tests specialist).
+ * @param prioritizeTests  When true (tests specialist), test-file scores are boosted
+ *   so they receive high-priority treatment. When false (all other specialists),
+ *   test files fall below the medium-risk threshold and are skipped entirely.
  */
 export function buildSharedContext(
   pr: PullRequestData,
   config: ReviewConfig,
   prioritizeTests = false,
 ): string {
+  const fileContentsMap: Record<string, string> = {};
+  for (const f of pr.fileContents) {
+    fileContentsMap[f.path] = f.content;
+  }
+
+  // Reserve ~2 000 chars for the metadata block + SPECIALIST_TAIL overhead.
+  const budget = tokensToChars(MAX_PROMPT_TOKENS) - 2000 - SPECIALIST_TAIL.length;
+
+  const { context, includedFiles, skippedFiles, stats } = buildReviewContext(
+    pr.diff,
+    fileContentsMap,
+    budget,
+    { boostTestFiles: prioritizeTests },
+  );
+
+  core.info(
+    `[context] ${stats.includedCount} files included, ${stats.skippedCount} skipped ` +
+    `(${stats.utilizationPct}% of ${stats.budgetChars} char budget used)`,
+  );
+
   let prompt = buildPrMetadata(pr, config);
-  const diffSection = `\n<diff>\n\`\`\`diff\n${pr.diff}\n\`\`\`\n</diff>\n`;
-  // Budget is in chars; always reserve space for the diff so it is never dropped.
-  const budgetForFiles =
-    tokensToChars(MAX_PROMPT_TOKENS) -
-    prompt.length -
-    diffSection.length -
-    SPECIALIST_TAIL.length;
-  prompt += buildFileContentsSection(pr, budgetForFiles, { prioritizeTests });
-  // Diff is appended after files and is unconditional — it's always included.
-  prompt += diffSection;
+  prompt += '\n' + buildFileSummary(includedFiles, skippedFiles);
+  prompt += '\n\n' + context;
   return prompt;
 }
 

@@ -36338,7 +36338,6 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.CATEGORY_LABELS = void 0;
 exports.buildPrMetadata = buildPrMetadata;
-exports.buildFileContentsSection = buildFileContentsSection;
 exports.buildSharedContext = buildSharedContext;
 exports.buildSpecialistSystemPrompt = buildSpecialistSystemPrompt;
 exports.buildSpecialistUserPrompt = buildSpecialistUserPrompt;
@@ -36346,6 +36345,7 @@ exports.buildJudgeSystemPrompt = buildJudgeSystemPrompt;
 exports.buildJudgeUserPrompt = buildJudgeUserPrompt;
 const core = __importStar(__nccwpck_require__(7484));
 const config_1 = __nccwpck_require__(2973);
+const diff_1 = __nccwpck_require__(5036);
 exports.CATEGORY_LABELS = {
     security: 'Security',
     tests: 'Test Coverage',
@@ -36385,66 +36385,6 @@ function buildPrMetadata(pr, config) {
     }
     return prompt;
 }
-const TEST_PATH_PATTERNS = [
-    /__tests__\//,
-    /\.(test|spec)\.[^/]+$/,
-    /\/test\//,
-    /\/tests\//,
-    /\/testing\//,
-    /\.stories\.[^/]+$/,
-    /\/fixtures\//,
-    /\/mocks?\//,
-    /\/e2e\//,
-    /\/cypress\//,
-    /\/playwright\//,
-];
-function isTestFile(filepath) {
-    return TEST_PATH_PATTERNS.some((pattern) => pattern.test(filepath));
-}
-function buildFileContentsSection(pr, budget, options = {}) {
-    if (pr.fileContents.length === 0)
-        return '';
-    if (budget <= 500) {
-        core.warning(`File context budget exhausted (budget=${budget} chars) — running in diff-only mode. ` +
-            `Increase MAX_PROMPT_TOKENS or reduce the number of active specialists if file context is needed.`);
-        return '';
-    }
-    const { prioritizeTests = false } = options;
-    const sortedFiles = [...pr.fileContents].sort((a, b) => {
-        const aIsTest = isTestFile(a.path) ? 1 : 0;
-        const bIsTest = isTestFile(b.path) ? 1 : 0;
-        // prioritizeTests=true  → test files sort before source files (aIsTest - bIsTest reversed)
-        // prioritizeTests=false → test files sort after source files (default)
-        return prioritizeTests ? bIsTest - aIsTest : aIsTest - bIsTest;
-    });
-    let section = `\n## Full File Contents\n`;
-    section += `IMPORTANT: Read these carefully. They show the complete code surrounding the changes.\n`;
-    section += `Use them to understand:\n`;
-    section += `- The full function/class/module the change lives in\n`;
-    section += `- What patterns sibling functions use (auth, error handling, validation)\n`;
-    section += `- How data flows through imports, types, and helper functions\n`;
-    section += `- Whether the changed code is consistent with the rest of the file\n\n`;
-    let fileCharsUsed = 0;
-    let filesIncluded = 0;
-    for (const file of sortedFiles) {
-        const dotIndex = file.path.lastIndexOf('.');
-        const ext = dotIndex >= 0 ? file.path.slice(dotIndex + 1) : '';
-        const block = `<file path="${file.path}"${file.truncated ? ' truncated="true"' : ''}>\n` +
-            `\`\`\`${ext}\n${file.content}\n\`\`\`\n` +
-            `</file>\n\n`;
-        if (fileCharsUsed + block.length > budget) {
-            const remaining = sortedFiles.length - filesIncluded;
-            core.warning(`Prompt budget exceeded (budget=${budget} chars). ` +
-                `Dropped ${remaining} file(s) from context ` +
-                `(${prioritizeTests ? 'source' : 'test'} files deprioritized).`);
-            break;
-        }
-        section += block;
-        fileCharsUsed += block.length;
-        filesIncluded++;
-    }
-    return section;
-}
 // ─── Shared context (built once per specialist-type, reused) ───────
 const SPECIALIST_TAIL = `\nNow review the changes above in your specialty area.
 
@@ -36455,24 +36395,26 @@ Step 4: Only create findings for genuine problems you can prove with specific co
 
 Return JSON.`;
 /**
- * Builds the shared context — PR metadata, full file contents, and the diff.
- * The diff is always included regardless of budget. File contents are dropped
- * gracefully when the budget runs out (with a logged warning).
+ * Builds the shared context — PR metadata, then the risk-scored file sections
+ * (each containing the diff hunk and, for high-risk files, the full file content).
  *
- * @param prioritizeTests  When true, test files appear first in the file
- *   contents section (used for the tests specialist).
+ * @param prioritizeTests  When true (tests specialist), test-file scores are boosted
+ *   so they receive high-priority treatment. When false (all other specialists),
+ *   test files fall below the medium-risk threshold and are skipped entirely.
  */
 function buildSharedContext(pr, config, prioritizeTests = false) {
+    const fileContentsMap = {};
+    for (const f of pr.fileContents) {
+        fileContentsMap[f.path] = f.content;
+    }
+    // Reserve ~2 000 chars for the metadata block + SPECIALIST_TAIL overhead.
+    const budget = (0, config_1.tokensToChars)(config_1.MAX_PROMPT_TOKENS) - 2000 - SPECIALIST_TAIL.length;
+    const { context, includedFiles, skippedFiles, stats } = (0, diff_1.buildReviewContext)(pr.diff, fileContentsMap, budget, { boostTestFiles: prioritizeTests });
+    core.info(`[context] ${stats.includedCount} files included, ${stats.skippedCount} skipped ` +
+        `(${stats.utilizationPct}% of ${stats.budgetChars} char budget used)`);
     let prompt = buildPrMetadata(pr, config);
-    const diffSection = `\n<diff>\n\`\`\`diff\n${pr.diff}\n\`\`\`\n</diff>\n`;
-    // Budget is in chars; always reserve space for the diff so it is never dropped.
-    const budgetForFiles = (0, config_1.tokensToChars)(config_1.MAX_PROMPT_TOKENS) -
-        prompt.length -
-        diffSection.length -
-        SPECIALIST_TAIL.length;
-    prompt += buildFileContentsSection(pr, budgetForFiles, { prioritizeTests });
-    // Diff is appended after files and is unconditional — it's always included.
-    prompt += diffSection;
+    prompt += '\n' + (0, diff_1.buildFileSummary)(includedFiles, skippedFiles);
+    prompt += '\n\n' + context;
     return prompt;
 }
 // ─── Specialist prompts ────────────────────────────────────────────
@@ -36745,7 +36687,7 @@ exports.getSpecialistJsonInstruction = getSpecialistJsonInstruction;
 exports.getJudgeJsonInstruction = getJudgeJsonInstruction;
 exports.loadConfig = loadConfig;
 const core = __importStar(__nccwpck_require__(7484));
-const ignore_1 = __nccwpck_require__(7237);
+const ignore_1 = __nccwpck_require__(9049);
 const guidelines_1 = __nccwpck_require__(5428);
 const DEFAULT_MODELS = {
     anthropic: 'claude-sonnet-4-20250514',
@@ -36938,6 +36880,485 @@ exports.MAX_PROMPT_CHARS = exports.MAX_PROMPT_TOKENS * 4; // 300 000 chars
 
 /***/ }),
 
+/***/ 5036:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.RISK_PATH_PATTERNS = exports.THRESHOLDS = exports.TEST_PATH_PATTERNS = void 0;
+exports.isTestFile = isTestFile;
+exports.splitDiffByFile = splitDiffByFile;
+exports.parseDiffForCommentTargets = parseDiffForCommentTargets;
+exports.smartTruncateDiff = smartTruncateDiff;
+exports.prepareDiffForReview = prepareDiffForReview;
+exports.scoreFile = scoreFile;
+exports.buildReviewContext = buildReviewContext;
+exports.buildFileSummary = buildFileSummary;
+const core = __importStar(__nccwpck_require__(7484));
+const ignore_1 = __nccwpck_require__(9049);
+// ─── Test-file detection ────────────────────────────────────────────
+exports.TEST_PATH_PATTERNS = [
+    /__tests__\//,
+    /\.(test|spec)\.[^/]+$/,
+    /\/test\//,
+    /\/tests\//,
+    /\/testing\//,
+    /\.stories\.[^/]+$/,
+    /\/fixtures\//,
+    /\/mocks?\//,
+    /\/e2e\//,
+    /\/cypress\//,
+    /\/playwright\//,
+];
+const TEST_FILE_PATTERN = /\.test\.|\.spec\.|__test__|__mock__|_test\./i;
+const TEST_FILE_BOOSTED_SCORE = 0.8;
+function isTestFile(filepath) {
+    return exports.TEST_PATH_PATTERNS.some((pattern) => pattern.test(filepath));
+}
+// ─── Diff splitting ─────────────────────────────────────────────────
+/** Split a unified diff string into per-file hunks. */
+function splitDiffByFile(rawDiff) {
+    const files = [];
+    const chunks = rawDiff.split(/^(?=diff --git )/m).filter(Boolean);
+    for (const chunk of chunks) {
+        const headerMatch = chunk.match(/^diff --git a\/.+ b\/(.+)$/m);
+        if (!headerMatch)
+            continue;
+        const filePath = headerMatch[1].trim();
+        const isDeleted = /^deleted file mode/m.test(chunk);
+        const isNew = /^new file mode/m.test(chunk);
+        files.push({ filePath, diffHunk: chunk, isDeleted, isNew });
+    }
+    return files;
+}
+/**
+ * Parse a unified diff to determine which new-file line numbers are valid
+ * targets for inline PR review comments.
+ */
+function parseDiffForCommentTargets(diff) {
+    const result = new Map();
+    for (const { filePath, diffHunk } of splitDiffByFile(diff)) {
+        const validLines = new Set();
+        const lines = diffHunk.split('\n');
+        let newLineNum = 0;
+        let inHunk = false;
+        for (const line of lines) {
+            const hunkHeader = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+            if (hunkHeader) {
+                newLineNum = parseInt(hunkHeader[1], 10);
+                inHunk = true;
+                continue;
+            }
+            if (!inHunk)
+                continue;
+            if (line.startsWith('diff --git '))
+                break;
+            if (line.startsWith('+')) {
+                validLines.add(newLineNum);
+                newLineNum++;
+            }
+            else if (line.startsWith('-')) {
+                // deleted line — no line number in the new file
+            }
+            else if (line.startsWith('\\')) {
+                // "\ No newline at end of file"
+            }
+            else {
+                validLines.add(newLineNum);
+                newLineNum++;
+            }
+        }
+        if (validLines.size > 0) {
+            result.set(filePath, validLines);
+        }
+    }
+    return result;
+}
+// ─── Diff truncation ────────────────────────────────────────────────
+const CODE_EXTENSIONS = new Set([
+    '.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java',
+    '.rb', '.php', '.cs', '.c', '.cpp', '.h', '.swift', '.kt',
+]);
+/**
+ * Truncate a diff at file boundaries instead of cutting mid-file.
+ * Acts as a hard safety cap — buildReviewContext handles fine-grained budgeting.
+ */
+function smartTruncateDiff(diff, maxSize) {
+    const scored = splitDiffByFile(diff)
+        .map(({ filePath, diffHunk }) => {
+        const ext = filePath.slice(filePath.lastIndexOf('.'));
+        const isTest = isTestFile(filePath);
+        let priority = 0;
+        if (CODE_EXTENSIONS.has(ext)) {
+            priority = isTest ? 1 : 2;
+        }
+        return { chunk: diffHunk, filename: filePath, priority };
+    })
+        .sort((a, b) => b.priority - a.priority);
+    const kept = [];
+    let totalSize = 0;
+    const skipped = [];
+    for (const { chunk, filename } of scored) {
+        if (totalSize + chunk.length <= maxSize) {
+            kept.push(chunk);
+            totalSize += chunk.length;
+        }
+        else {
+            skipped.push(filename);
+        }
+    }
+    if (kept.length === 0 && scored.length > 0) {
+        const largest = scored[0];
+        core.warning(`All diff chunks exceed maxDiffSize (${maxSize}). Force-including a truncated version of ${largest.filename}.`);
+        kept.push(largest.chunk.slice(0, maxSize));
+    }
+    let result = kept.join('');
+    if (skipped.length > 0) {
+        result +=
+            `\n\n... [${skipped.length} file(s) truncated: ` +
+                `${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '...' : ''}] ...`;
+    }
+    return result;
+}
+/**
+ * Filter ignored files from the raw diff, optionally redact secrets,
+ * and truncate at file boundaries if over the size limit.
+ */
+async function prepareDiffForReview(rawDiff, ignoredFiles, options) {
+    let diff = (0, ignore_1.filterDiffByFiles)(rawDiff, ignoredFiles);
+    let redactionCount = 0;
+    if (options.redactSecrets) {
+        const { redactSecrets, countRedactions } = await Promise.resolve().then(() => __importStar(__nccwpck_require__(6670)));
+        const before = diff;
+        diff = redactSecrets(diff);
+        redactionCount = countRedactions(before, diff);
+        if (redactionCount > 0) {
+            core.warning(`Redacted ${redactionCount} potential secret(s) from diff before sending to AI`);
+        }
+    }
+    if (diff.length > options.maxDiffSize) {
+        core.warning(`Diff size (${diff.length} chars) exceeds max (${options.maxDiffSize}). Truncating.`);
+        diff = smartTruncateDiff(diff, options.maxDiffSize);
+    }
+    return { diff, redactionCount };
+}
+// ─── Risk scoring ──────────────────────────────────────────────────
+exports.THRESHOLDS = {
+    HIGH_RISK: 0.6,
+    MEDIUM_RISK: 0.3,
+};
+exports.RISK_PATH_PATTERNS = [
+    { pattern: /auth|login|logout|session|token|jwt|oauth|saml|sso|password|credential/i, score: 0.95 },
+    { pattern: /payment|billing|stripe|wallet|invoice|checkout|subscription/i, score: 0.95 },
+    { pattern: /secret|private.?key|api.?key|\.pem|\.pfx|\.p12/i, score: 0.95 },
+    { pattern: /admin|internal|privileged|superuser|sudo/i, score: 0.85 },
+    { pattern: /migration|schema|seed|db\/|database\//i, score: 0.80 },
+    { pattern: /config\/|\.env|settings\./i, score: 0.75 },
+    { pattern: /middleware|interceptor|guard|policy/i, score: 0.75 },
+    { pattern: /router|controller|handler|service|repository/i, score: 0.60 },
+    { pattern: /index\.(js|ts|py|go|java|rb|php|c|cpp|h|swift|kt)$/i, score: 0.55 },
+    { pattern: TEST_FILE_PATTERN, score: 0.20 },
+    { pattern: /\.md$|README|CHANGELOG|LICENSE|docker|docs\//i, score: 0.05 },
+    { pattern: /package-lock\.json|yarn\.lock|\.lock$|dist\/|build\//i, score: 0.00 },
+];
+function scoreFile(filePath, diffHunk, options = {}) {
+    let patternScore = null;
+    for (const { pattern, score: s } of exports.RISK_PATH_PATTERNS) {
+        if (pattern.test(filePath)) {
+            const effectiveScore = options.boostTestFiles && pattern === TEST_FILE_PATTERN ? TEST_FILE_BOOSTED_SCORE : s;
+            if (patternScore === null || effectiveScore > patternScore) {
+                patternScore = effectiveScore;
+            }
+        }
+    }
+    let score = patternScore !== null ? patternScore : 0.4;
+    const linesChanged = (diffHunk.match(/^[+-]/gm) ?? []).length;
+    if (linesChanged > 300)
+        score = Math.min(1.0, score + 0.15);
+    else if (linesChanged > 100)
+        score = Math.min(1.0, score + 0.10);
+    else if (linesChanged > 50)
+        score = Math.min(1.0, score + 0.05);
+    const additions = (diffHunk.match(/^\+[^+]/gm) ?? []).length;
+    const deletions = (diffHunk.match(/^-[^-]/gm) ?? []).length;
+    if (additions === 0 && deletions > 0)
+        score = Math.max(0.0, score - 0.1);
+    return Math.min(1.0, score);
+}
+// ─── Context budget allocation ──────────────────────────────────────
+function buildReviewContext(rawDiff, fileContents, charBudget, options = {}) {
+    const files = splitDiffByFile(rawDiff);
+    const scored = files
+        .map((f) => ({ ...f, score: scoreFile(f.filePath, f.diffHunk, options) }))
+        .sort((a, b) => b.score - a.score);
+    const included = [];
+    const skipped = [];
+    const sections = [];
+    let usedChars = 0;
+    for (const file of scored) {
+        const { filePath, diffHunk, score, isDeleted, isNew } = file;
+        if (score === 0.0) {
+            skipped.push({ filePath, reason: 'auto-generated/lock file' });
+            continue;
+        }
+        if (score < exports.THRESHOLDS.MEDIUM_RISK) {
+            skipped.push({ filePath, reason: `low risk (score=${score.toFixed(2)})` });
+            continue;
+        }
+        const wantFullContent = score >= exports.THRESHOLDS.HIGH_RISK && !isDeleted;
+        const fullContent = fileContents[filePath] ?? '';
+        const diffCost = diffHunk.length;
+        const contentCost = wantFullContent ? fullContent.length : 0;
+        const totalCost = diffCost + contentCost + 200;
+        if (usedChars + totalCost > charBudget) {
+            if (wantFullContent && usedChars + diffCost + 200 <= charBudget) {
+                sections.push(formatFileSection(filePath, diffHunk, null, score, isDeleted, isNew));
+                usedChars += diffCost + 200;
+                included.push({ filePath, mode: 'diff-only (budget fallback)', score });
+                continue;
+            }
+            skipped.push({ filePath, reason: `budget exhausted (score=${score.toFixed(2)})` });
+            continue;
+        }
+        const content = wantFullContent ? fullContent : null;
+        sections.push(formatFileSection(filePath, diffHunk, content, score, isDeleted, isNew));
+        usedChars += totalCost;
+        included.push({
+            filePath,
+            mode: wantFullContent ? 'diff+content' : 'diff-only',
+            score,
+        });
+    }
+    return {
+        context: sections.join('\n\n'),
+        includedFiles: included,
+        skippedFiles: skipped,
+        stats: {
+            totalFiles: files.length,
+            includedCount: included.length,
+            skippedCount: skipped.length,
+            usedChars,
+            budgetChars: charBudget,
+            utilizationPct: Math.round((usedChars / charBudget) * 100),
+        },
+    };
+}
+function formatFileSection(filePath, diffHunk, fullContent, score, isDeleted, isNew) {
+    const riskLabel = score >= 0.8 ? 'HIGH' :
+        score >= 0.6 ? 'MEDIUM-HIGH' :
+            score >= 0.3 ? 'MEDIUM' :
+                'LOW';
+    const status = isNew ? 'NEW FILE' : isDeleted ? 'DELETED' : 'MODIFIED';
+    const meta = `<!-- file: ${filePath} | risk: ${riskLabel} (${score.toFixed(2)}) | ${status} -->`;
+    let out = `${meta}\n\n`;
+    out += `<diff path="${filePath}">\n${diffHunk.trim()}\n</diff>`;
+    if (fullContent) {
+        out += `\n\n<file path="${filePath}">\n${fullContent.trim()}\n</file>`;
+    }
+    return out;
+}
+function buildFileSummary(includedFiles, skippedFiles) {
+    const lines = [];
+    lines.push('**Files in context:**');
+    for (const { filePath, mode, score } of includedFiles) {
+        const icon = score >= 0.8 ? '🔴' : score >= 0.6 ? '🟠' : '🟡';
+        lines.push(`  ${icon} \`${filePath}\` (${mode})`);
+    }
+    if (skippedFiles.length > 0) {
+        lines.push('');
+        lines.push('**Files excluded from context:**');
+        for (const { filePath, reason } of skippedFiles) {
+            lines.push(`  ⚪ \`${filePath}\` — ${reason}`);
+        }
+    }
+    return lines.join('\n');
+}
+
+
+/***/ }),
+
+/***/ 9049:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseIgnorePatterns = parseIgnorePatterns;
+exports.shouldIgnoreFile = shouldIgnoreFile;
+exports.filterDiffByFiles = filterDiffByFiles;
+exports.isBinaryFile = isBinaryFile;
+const DEFAULT_IGNORE_PATTERNS = [
+    // dependency directories
+    '**/node_modules/**',
+    '**/vendor/**',
+    // build outputs
+    '**/dist/**',
+    '**/build/**',
+    '**/.next/**',
+    '**/out/**',
+    '**/coverage/**',
+    // version-control internals
+    '**/.git/**',
+    // lock files (large, machine-generated, no review value)
+    '**/package-lock.json',
+    '**/yarn.lock',
+    '**/pnpm-lock.yaml',
+    '**/bun.lockb',
+    '**/Gemfile.lock',
+    '**/Cargo.lock',
+    '**/go.sum',
+    '**/poetry.lock',
+    // markdown docs (no review value)
+    '**/README.md',
+    '**/README*',
+    '**/CHANGELOG.md',
+    '**/CHANGELOG*',
+    '**/*.md',
+    // VCS / editor config
+    '**/.gitignore',
+    '**/.gitattributes',
+    // CI/CD config — workflow files, not application logic
+    '**/.github/**',
+    // minified / bundled assets
+    '**/*.min.js',
+    '**/*.min.css',
+    '**/*.bundle.js',
+    // source maps
+    '**/*.map',
+    // generated / vendored code
+    '**/*.pb.go',
+    '**/*_generated.*',
+    '**/*.gen.*',
+    // test snapshots
+    '**/*.snap',
+    // binary / media assets
+    '**/*.png',
+    '**/*.jpg',
+    '**/*.jpeg',
+    '**/*.gif',
+    '**/*.ico',
+    '**/*.woff',
+    '**/*.woff2',
+    '**/*.ttf',
+    '**/*.pdf',
+    '**/*.zip',
+];
+function globToRegex(glob) {
+    const escaped = glob
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*\*/g, '{{GLOBSTAR}}')
+        .replace(/\*/g, '[^/]*')
+        .replace(/{{GLOBSTAR}}/g, '.*')
+        .replace(/\?/g, '.');
+    return new RegExp(`^${escaped}$`);
+}
+/** Match a filename against a single glob (supports ** and basename fallbacks). */
+function matchGlob(filename, glob) {
+    const basename = filename.includes('/')
+        ? filename.slice(filename.lastIndexOf('/') + 1)
+        : filename;
+    if (globToRegex(glob).test(filename))
+        return true;
+    // **/foo.json also matches root-level foo.json
+    if (glob.startsWith('**/')) {
+        const rest = glob.slice(3);
+        if (rest.endsWith('/**')) {
+            const dir = rest.slice(0, -3);
+            if (filename.includes(`/${dir}/`) || filename.startsWith(`${dir}/`))
+                return true;
+        }
+        else if (basename === rest || filename.endsWith(`/${rest}`)) {
+            return true;
+        }
+    }
+    // *.min.js matches basename
+    if (glob.startsWith('*.') && globToRegex(glob).test(basename))
+        return true;
+    return false;
+}
+function parseIgnorePatterns(input) {
+    const custom = input
+        .split(',')
+        .map((p) => p.trim())
+        .filter(Boolean);
+    return [...DEFAULT_IGNORE_PATTERNS, ...custom];
+}
+function shouldIgnoreFile(filename, patterns) {
+    const allPatterns = patterns.length > 0 ? patterns : DEFAULT_IGNORE_PATTERNS;
+    return allPatterns.some((glob) => matchGlob(filename, glob));
+}
+function filterDiffByFiles(diff, ignoredFiles) {
+    if (ignoredFiles.size === 0)
+        return diff;
+    const chunks = diff.split(/(?=^diff --git )/m);
+    const kept = [];
+    for (const chunk of chunks) {
+        if (!chunk.startsWith('diff --git ')) {
+            if (chunk)
+                kept.push(chunk);
+            continue;
+        }
+        const match = chunk.match(/^diff --git a\/(.+?) b\//m);
+        const file = match?.[1];
+        if (file && ignoredFiles.has(file))
+            continue;
+        kept.push(chunk);
+    }
+    return kept.join('');
+}
+// ─── Binary file detection (skip content fetch) ───────────────────
+const BINARY_EXTENSIONS = new Set([
+    '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.svg',
+    '.woff', '.woff2', '.ttf', '.eot',
+    '.pdf', '.zip', '.tar', '.gz', '.br',
+    '.mp3', '.mp4', '.mov', '.avi',
+    '.wasm', '.pyc', '.class', '.o', '.so', '.dll',
+]);
+/** True when a file path has a binary/media extension and should not be fetched as text. */
+function isBinaryFile(filePath) {
+    const dot = filePath.lastIndexOf('.');
+    if (dot < 0)
+        return false;
+    return BINARY_EXTENSIONS.has(filePath.slice(dot).toLowerCase());
+}
+
+
+/***/ }),
+
 /***/ 8666:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -36963,6 +37384,14 @@ const RATES = [
     { pattern: 'gpt-4', rate: { input: 30, output: 60 } },
     { pattern: 'o1-mini', rate: { input: 3, output: 12 } },
     { pattern: 'o1', rate: { input: 15, output: 60 } },
+    // Azure
+    { pattern: 'gpt-5.4-nano', rate: { input: 0.15, output: 0.6 } },
+    { pattern: 'gpt-5.4', rate: { input: 2.5, output: 10 } },
+    { pattern: 'gpt-5.4-mini', rate: { input: 0.15, output: 0.6 } },
+    { pattern: 'gpt-5.4-small', rate: { input: 0.15, output: 0.6 } },
+    { pattern: 'gpt-5.4-medium', rate: { input: 0.15, output: 0.6 } },
+    { pattern: 'gpt-5.4-large', rate: { input: 0.15, output: 0.6 } },
+    { pattern: 'gpt-5.4-xlarge', rate: { input: 0.15, output: 0.6 } },
 ];
 function estimateCost(model, inputTokens, outputTokens) {
     const match = RATES.find((r) => model.includes(r.pattern));
@@ -36972,70 +37401,6 @@ function estimateCost(model, inputTokens, outputTokens) {
     if (cost < 0.001)
         return '<$0.001';
     return `~$${cost.toFixed(3)}`;
-}
-
-
-/***/ }),
-
-/***/ 6290:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.parseDiffForCommentTargets = parseDiffForCommentTargets;
-/**
- * Parse a unified diff to determine which new-file line numbers are valid
- * targets for inline PR review comments (i.e. lines that appear in diff hunks).
- *
- * Returns Map<filename, Set<valid line numbers on the RIGHT/new side>>.
- */
-function parseDiffForCommentTargets(diff) {
-    const result = new Map();
-    const fileChunks = diff.split(/(?=^diff --git )/m);
-    for (const chunk of fileChunks) {
-        if (!chunk.startsWith('diff --git '))
-            continue;
-        const fileMatch = chunk.match(/^diff --git a\/.+? b\/(.+)$/m);
-        if (!fileMatch)
-            continue;
-        const filename = fileMatch[1];
-        const validLines = new Set();
-        const lines = chunk.split('\n');
-        let newLineNum = 0;
-        let inHunk = false;
-        for (const line of lines) {
-            const hunkHeader = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-            if (hunkHeader) {
-                newLineNum = parseInt(hunkHeader[1], 10);
-                inHunk = true;
-                continue;
-            }
-            if (!inHunk)
-                continue;
-            if (line.startsWith('diff --git '))
-                break;
-            if (line.startsWith('+')) {
-                validLines.add(newLineNum);
-                newLineNum++;
-            }
-            else if (line.startsWith('-')) {
-                // deleted line — no line number in the new file
-            }
-            else if (line.startsWith('\\')) {
-                // "\ No newline at end of file"
-            }
-            else {
-                // context line (space-prefixed) or blank context
-                validLines.add(newLineNum);
-                newLineNum++;
-            }
-        }
-        if (validLines.size > 0) {
-            result.set(filename, validLines);
-        }
-    }
-    return result;
 }
 
 
@@ -37252,7 +37617,447 @@ function severityIcon(severity) {
 
 /***/ }),
 
-/***/ 9248:
+/***/ 6584:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getOctokit = getOctokit;
+exports.getRepoContext = getRepoContext;
+exports.ghRequest = ghRequest;
+const core = __importStar(__nccwpck_require__(7484));
+const github = __importStar(__nccwpck_require__(3228));
+const RATE_LIMIT_WARN_THRESHOLD = 100;
+function getOctokit(token) {
+    return github.getOctokit(token);
+}
+function getRepoContext() {
+    return github.context.repo;
+}
+function checkRateLimitHeaders(headers) {
+    const remaining = headers['x-ratelimit-remaining'];
+    if (remaining === undefined)
+        return;
+    const remainingNum = parseInt(remaining, 10);
+    if (Number.isNaN(remainingNum))
+        return;
+    if (remainingNum <= 0) {
+        const resetEpoch = parseInt(headers['x-ratelimit-reset'] ?? '0', 10);
+        const waitSec = Math.max(0, resetEpoch - Math.floor(Date.now() / 1000));
+        core.warning(`GitHub API rate limit exhausted. Resets in ${waitSec}s. Subsequent requests may fail.`);
+    }
+    else if (remainingNum < RATE_LIMIT_WARN_THRESHOLD) {
+        core.warning(`GitHub API rate limit running low: ${remainingNum} requests remaining.`);
+    }
+}
+async function ghRequest(fn, label) {
+    try {
+        const response = await fn();
+        checkRateLimitHeaders(response.headers);
+        return response.data;
+    }
+    catch (err) {
+        if (err != null &&
+            typeof err === 'object' &&
+            'status' in err &&
+            err.status === 403) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (/rate limit/i.test(msg)) {
+                core.error(`GitHub API rate limit hit during ${label}. Aborting.`);
+            }
+        }
+        throw err;
+    }
+}
+
+
+/***/ }),
+
+/***/ 6645:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.postReviewComment = postReviewComment;
+exports.postInlineReview = postInlineReview;
+const core = __importStar(__nccwpck_require__(7484));
+const diff_1 = __nccwpck_require__(5036);
+const client_1 = __nccwpck_require__(6584);
+const REVIEW_COMMENT_MARKER = '<!-- ai-pr-reviewer -->';
+const MAX_COMMENT_BODY = 65536;
+// ─── PR summary comment ─────────────────────────────────────────────
+async function postReviewComment(token, prNumber, body) {
+    const octokit = (0, client_1.getOctokit)(token);
+    const { owner, repo } = (0, client_1.getRepoContext)();
+    let fullBody = `${REVIEW_COMMENT_MARKER}\n${body}`;
+    if (fullBody.length > MAX_COMMENT_BODY) {
+        core.warning('Review comment exceeds GitHub limit; truncating body.');
+        fullBody =
+            fullBody.slice(0, 65000) +
+                '\n\n... [review truncated — see workflow logs] ...';
+    }
+    await upsertComment(octokit, owner, repo, prNumber, REVIEW_COMMENT_MARKER, fullBody);
+}
+async function upsertComment(octokit, owner, repo, prNumber, marker, body) {
+    let existing;
+    let page = 1;
+    while (!existing) {
+        const { data: comments } = await octokit.rest.issues.listComments({
+            owner,
+            repo,
+            issue_number: prNumber,
+            per_page: 100,
+            page,
+        });
+        existing = comments.find((c) => c.body?.includes(marker));
+        if (existing || comments.length < 100)
+            break;
+        page++;
+    }
+    if (existing) {
+        await octokit.rest.issues.updateComment({
+            owner,
+            repo,
+            comment_id: existing.id,
+            body,
+        });
+        core.info(`Updated existing review comment #${existing.id}`);
+    }
+    else {
+        await octokit.rest.issues.createComment({
+            owner,
+            repo,
+            issue_number: prNumber,
+            body,
+        });
+        core.info('Posted new review comment');
+    }
+}
+// ─── Inline review comments ─────────────────────────────────────────
+function findNearestValidLine(targetLine, validLines) {
+    if (validLines.size === 0)
+        return undefined;
+    let nearest;
+    let minDist = Infinity;
+    for (const line of validLines) {
+        const dist = Math.abs(line - targetLine);
+        if (dist < minDist) {
+            minDist = dist;
+            nearest = line;
+        }
+    }
+    return nearest;
+}
+function formatInlineCommentBody(finding, relocated) {
+    const icon = finding.severity === 'critical'
+        ? '🔴'
+        : finding.severity === 'warning'
+            ? '🟡'
+            : '🔵';
+    let body = `${icon} **${finding.severity.toUpperCase()}** — ${finding.message}`;
+    if (relocated) {
+        body = `📍 *Refers to line ${finding.line}*\n\n${body}`;
+    }
+    return body;
+}
+async function postInlineReview(token, prNumber, diff, findings) {
+    const findingsWithLocation = findings.filter((f) => f.file && f.line);
+    if (findingsWithLocation.length === 0) {
+        return { posted: 0, skipped: 0 };
+    }
+    const validTargets = (0, diff_1.parseDiffForCommentTargets)(diff);
+    const comments = [];
+    let skipped = 0;
+    for (const finding of findingsWithLocation) {
+        const fileTargets = validTargets.get(finding.file);
+        if (!fileTargets || fileTargets.size === 0) {
+            skipped++;
+            continue;
+        }
+        let line = finding.line;
+        let relocated = false;
+        if (!fileTargets.has(line)) {
+            const nearest = findNearestValidLine(line, fileTargets);
+            if (!nearest) {
+                skipped++;
+                continue;
+            }
+            line = nearest;
+            relocated = true;
+        }
+        comments.push({
+            path: finding.file,
+            line,
+            body: formatInlineCommentBody(finding, relocated),
+        });
+    }
+    if (comments.length === 0) {
+        return { posted: 0, skipped };
+    }
+    const octokit = (0, client_1.getOctokit)(token);
+    const { owner, repo } = (0, client_1.getRepoContext)();
+    const existingBotComments = await listExistingBotReviewComments(octokit, owner, repo, prNumber);
+    const newComments = comments.filter((c) => !existingBotComments.has(`${c.path}:${c.line}:${c.body}`));
+    if (newComments.length === 0) {
+        core.info('All inline findings already posted — skipping duplicates.');
+        return { posted: 0, skipped };
+    }
+    return postInlineComments(octokit, owner, repo, prNumber, newComments, comments, skipped);
+}
+async function postInlineComments(octokit, owner, repo, prNumber, newComments, allComments, skipped) {
+    try {
+        await octokit.rest.pulls.createReview({
+            owner,
+            repo,
+            pull_number: prNumber,
+            event: 'COMMENT',
+            body: `🤖 AI PR Reviewer — ${newComments.length} inline finding(s)`,
+            comments: newComments.map((c) => ({
+                path: c.path,
+                line: c.line,
+                side: 'RIGHT',
+                body: c.body,
+            })),
+        });
+        core.info(`Posted ${newComments.length} inline review comment(s) ` +
+            `(${allComments.length - newComments.length} duplicates skipped)`);
+        return { posted: newComments.length, skipped };
+    }
+    catch (batchErr) {
+        const batchMsg = batchErr instanceof Error ? batchErr.message : String(batchErr);
+        core.warning(`Batch inline review failed (${batchMsg}). Falling back to individual comments.`);
+        const { data: prData } = await octokit.rest.pulls.get({
+            owner,
+            repo,
+            pull_number: prNumber,
+        });
+        const commitId = prData.head.sha;
+        let posted = 0;
+        for (const c of newComments) {
+            try {
+                await octokit.rest.pulls.createReviewComment({
+                    owner,
+                    repo,
+                    pull_number: prNumber,
+                    path: c.path,
+                    line: c.line,
+                    side: 'RIGHT',
+                    body: c.body,
+                    commit_id: commitId,
+                });
+                posted++;
+            }
+            catch {
+                skipped++;
+                core.debug(`Skipped inline comment on ${c.path}:${c.line} (line not in diff)`);
+            }
+        }
+        core.info(`Posted ${posted} inline comment(s) individually (${skipped} skipped)`);
+        return { posted, skipped };
+    }
+}
+async function listExistingBotReviewComments(octokit, owner, repo, prNumber) {
+    const keys = new Set();
+    let page = 1;
+    while (true) {
+        const { data: comments } = await octokit.rest.pulls.listReviewComments({
+            owner,
+            repo,
+            pull_number: prNumber,
+            per_page: 100,
+            page,
+        });
+        for (const c of comments) {
+            if (c.body?.includes('**CRITICAL**') ||
+                c.body?.includes('**WARNING**') ||
+                c.body?.includes('**SUGGESTION**')) {
+                const line = c.line ?? c.original_line ?? 0;
+                keys.add(`${c.path}:${line}:${c.body}`);
+            }
+        }
+        if (comments.length < 100)
+            break;
+        page++;
+    }
+    return keys;
+}
+
+
+/***/ }),
+
+/***/ 5092:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.fetchFileContents = fetchFileContents;
+const client_1 = __nccwpck_require__(6584);
+const ignore_1 = __nccwpck_require__(9049);
+const FETCH_CONCURRENCY = 10;
+async function runWithConcurrency(items, concurrency, fn) {
+    let index = 0;
+    async function worker() {
+        while (index < items.length) {
+            const i = index++;
+            await fn(items[i]);
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+}
+async function fetchFileContents(octokit, owner, repo, ref, files, maxFileSize, redactSecretsEnabled) {
+    const results = [];
+    const filePaths = [...files].filter((filePath) => !(0, ignore_1.isBinaryFile)(filePath));
+    await runWithConcurrency(filePaths, FETCH_CONCURRENCY, async (filePath) => {
+        try {
+            const data = await (0, client_1.ghRequest)(() => octokit.rest.repos.getContent({
+                owner,
+                repo,
+                path: filePath,
+                ref,
+            }), `getContent(${filePath})`);
+            if (!data.content || data.type !== 'file')
+                return;
+            let content = Buffer.from(data.content, 'base64').toString('utf-8');
+            let truncated = false;
+            if (content.length > maxFileSize) {
+                content = content.slice(0, maxFileSize) + '\n// ... [file truncated] ...';
+                truncated = true;
+            }
+            if (redactSecretsEnabled) {
+                const { redactSecrets } = await Promise.resolve().then(() => __importStar(__nccwpck_require__(6670)));
+                content = redactSecrets(content);
+            }
+            results.push({ path: filePath, content, truncated });
+        }
+        catch {
+            // File might not exist on the head branch (deleted file) — skip
+        }
+    });
+    return results;
+}
+
+
+/***/ }),
+
+/***/ 1631:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.postInlineReview = exports.postReviewComment = exports.getPullRequestData = void 0;
+var pr_data_1 = __nccwpck_require__(6770);
+Object.defineProperty(exports, "getPullRequestData", ({ enumerable: true, get: function () { return pr_data_1.getPullRequestData; } }));
+var comments_1 = __nccwpck_require__(6645);
+Object.defineProperty(exports, "postReviewComment", ({ enumerable: true, get: function () { return comments_1.postReviewComment; } }));
+Object.defineProperty(exports, "postInlineReview", ({ enumerable: true, get: function () { return comments_1.postInlineReview; } }));
+
+
+/***/ }),
+
+/***/ 6770:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
@@ -37292,49 +38097,12 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getPullRequestData = getPullRequestData;
-exports.postReviewComment = postReviewComment;
-exports.postInlineReview = postInlineReview;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
-const ignore_1 = __nccwpck_require__(7237);
-const diff_parser_1 = __nccwpck_require__(6290);
-// ─── GitHub API rate-limit awareness ────────────────────────────────
-const RATE_LIMIT_WARN_THRESHOLD = 100;
-function checkRateLimitHeaders(headers) {
-    const remaining = headers['x-ratelimit-remaining'];
-    if (remaining === undefined)
-        return;
-    const remainingNum = parseInt(remaining, 10);
-    if (Number.isNaN(remainingNum))
-        return;
-    if (remainingNum <= 0) {
-        const resetEpoch = parseInt(headers['x-ratelimit-reset'] ?? '0', 10);
-        const waitSec = Math.max(0, resetEpoch - Math.floor(Date.now() / 1000));
-        core.warning(`GitHub API rate limit exhausted. Resets in ${waitSec}s. Subsequent requests may fail.`);
-    }
-    else if (remainingNum < RATE_LIMIT_WARN_THRESHOLD) {
-        core.warning(`GitHub API rate limit running low: ${remainingNum} requests remaining.`);
-    }
-}
-async function ghRequest(fn, label) {
-    try {
-        const response = await fn();
-        checkRateLimitHeaders(response.headers);
-        return response.data;
-    }
-    catch (err) {
-        if (err != null &&
-            typeof err === 'object' &&
-            'status' in err &&
-            err.status === 403) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (/rate limit/i.test(msg)) {
-                core.error(`GitHub API rate limit hit during ${label}. Aborting.`);
-            }
-        }
-        throw err;
-    }
-}
+const ignore_1 = __nccwpck_require__(9049);
+const diff_1 = __nccwpck_require__(5036);
+const client_1 = __nccwpck_require__(6584);
+const file_contents_1 = __nccwpck_require__(5092);
 async function listAllChangedFiles(octokit, owner, repo, prNumber) {
     const filenames = [];
     let page = 1;
@@ -37353,8 +38121,13 @@ async function listAllChangedFiles(octokit, owner, repo, prNumber) {
     }
     return filenames;
 }
+function partitionFiles(allFiles, ignorePatterns) {
+    const ignoredFiles = allFiles.filter((f) => (0, ignore_1.shouldIgnoreFile)(f, ignorePatterns));
+    const reviewedFiles = allFiles.filter((f) => !(0, ignore_1.shouldIgnoreFile)(f, ignorePatterns));
+    return { reviewedFiles, ignoredFiles };
+}
 async function getPullRequestData(token, options) {
-    const octokit = github.getOctokit(token);
+    const octokit = (0, client_1.getOctokit)(token);
     const context = github.context;
     if (!context.payload.pull_request) {
         throw new Error('This action can only run on pull_request events.');
@@ -37373,46 +38146,26 @@ async function getPullRequestData(token, options) {
         mediaType: { format: 'diff' },
     });
     const allFiles = await listAllChangedFiles(octokit, owner, repo, prNumber);
-    const ignoredFiles = allFiles.filter((f) => (0, ignore_1.shouldIgnoreFile)(f, options.ignorePatterns));
-    const reviewedFiles = allFiles.filter((f) => !(0, ignore_1.shouldIgnoreFile)(f, options.ignorePatterns));
+    const { reviewedFiles, ignoredFiles } = partitionFiles(allFiles, options.ignorePatterns);
     if (ignoredFiles.length > 0) {
         core.info(`Skipping ${ignoredFiles.length} ignored file(s): ${ignoredFiles.slice(0, 10).join(', ')}${ignoredFiles.length > 10 ? '...' : ''}`);
     }
-    const ignoredSet = new Set(ignoredFiles);
-    let diffText = rawDiff;
-    diffText = (0, ignore_1.filterDiffByFiles)(diffText, ignoredSet);
-    let redactionCount = 0;
-    if (options.redactSecrets) {
-        const { redactSecrets, countRedactions } = await Promise.resolve().then(() => __importStar(__nccwpck_require__(6670)));
-        const before = diffText;
-        diffText = redactSecrets(diffText);
-        redactionCount = countRedactions(before, diffText);
-        if (redactionCount > 0) {
-            core.warning(`Redacted ${redactionCount} potential secret(s) from diff before sending to AI`);
-        }
-    }
-    if (diffText.length > options.maxDiffSize) {
-        core.warning(`Diff size (${diffText.length} chars) exceeds max (${options.maxDiffSize}). Truncating.`);
-        diffText = smartTruncateDiff(diffText, options.maxDiffSize);
-    }
+    const { diff, redactionCount } = await (0, diff_1.prepareDiffForReview)(rawDiff, new Set(ignoredFiles), { maxDiffSize: options.maxDiffSize, redactSecrets: options.redactSecrets });
     if (reviewedFiles.length === 0) {
         core.warning('No reviewable files after applying ignore patterns.');
     }
-    // Fetch full file contents for changed files + explicit context files
     let fileContents = [];
     if (options.includeFileContents) {
-        const filesToFetch = new Set([
-            ...reviewedFiles,
-            ...options.contextFiles,
-        ]);
-        fileContents = await fetchFileContents(octokit, owner, repo, pr.head.ref, filesToFetch, options.maxFileSize, options.redactSecrets);
-        core.info(`Fetched ${fileContents.length} file(s) for full context (${fileContents.filter((f) => f.truncated).length} truncated)`);
+        const filesToFetch = new Set([...reviewedFiles, ...options.contextFiles]);
+        fileContents = await (0, file_contents_1.fetchFileContents)(octokit, owner, repo, pr.head.ref, filesToFetch, options.maxFileSize, options.redactSecrets);
+        core.info(`Fetched ${fileContents.length} file(s) for full context ` +
+            `(${fileContents.filter((f) => f.truncated).length} truncated)`);
     }
     return {
         number: prNumber,
         title: pr.title,
         body: pr.body ?? '',
-        diff: diffText,
+        diff,
         baseBranch: pr.base.ref,
         headBranch: pr.head.ref,
         author: pr.user?.login ?? 'unknown',
@@ -37422,419 +38175,6 @@ async function getPullRequestData(token, options) {
         redactionCount,
         fileContents,
     };
-}
-const TEST_PATH_PATTERNS = [
-    /__tests__\//,
-    /\.(test|spec)\.[^/]+$/,
-    /\/test\//,
-    /\/tests\//,
-    /\/testing\//,
-    /\.stories\.[^/]+$/,
-    /\/fixtures\//,
-    /\/mocks?\//,
-    /\/e2e\//,
-    /\/cypress\//,
-    /\/playwright\//,
-];
-function isTestFile(filepath) {
-    return TEST_PATH_PATTERNS.some((pattern) => pattern.test(filepath));
-}
-/**
- * Truncate a diff at file boundaries instead of cutting mid-file.
- * Prioritizes source code files over tests and configs/docs.
- * Priority: 2 = source code, 1 = test files, 0 = configs/docs.
- */
-function smartTruncateDiff(diff, maxSize) {
-    const chunks = diff.split(/(?=^diff --git )/m);
-    const codeExts = new Set([
-        '.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java',
-        '.rb', '.php', '.cs', '.c', '.cpp', '.h', '.swift', '.kt',
-    ]);
-    const scored = chunks
-        .filter((c) => c.startsWith('diff --git '))
-        .map((chunk) => {
-        const fileMatch = chunk.match(/^diff --git a\/.+? b\/(.+)$/m);
-        const filename = fileMatch?.[1] ?? '';
-        const ext = filename.slice(filename.lastIndexOf('.'));
-        const isTest = isTestFile(filename);
-        let priority = 0;
-        if (codeExts.has(ext)) {
-            priority = isTest ? 1 : 2;
-        }
-        return { chunk, filename, priority };
-    })
-        .sort((a, b) => b.priority - a.priority);
-    const kept = [];
-    let totalSize = 0;
-    const skipped = [];
-    for (const { chunk, filename } of scored) {
-        if (totalSize + chunk.length <= maxSize) {
-            kept.push(chunk);
-            totalSize += chunk.length;
-        }
-        else {
-            skipped.push(filename);
-        }
-    }
-    if (kept.length === 0 && scored.length > 0) {
-        const largest = scored[0];
-        core.warning(`All diff chunks exceed maxDiffSize (${maxSize}). Force-including a truncated version of ${largest.filename}.`);
-        kept.push(largest.chunk.slice(0, maxSize));
-    }
-    let result = kept.join('');
-    if (skipped.length > 0) {
-        result += `\n\n... [${skipped.length} file(s) truncated: ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '...' : ''}] ...`;
-    }
-    return result;
-}
-// ─── File content fetching ──────────────────────────────────────────
-const BINARY_EXTENSIONS = new Set([
-    '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.svg',
-    '.woff', '.woff2', '.ttf', '.eot',
-    '.pdf', '.zip', '.tar', '.gz', '.br',
-    '.mp3', '.mp4', '.mov', '.avi',
-    '.wasm', '.pyc', '.class', '.o', '.so', '.dll',
-]);
-const FETCH_CONCURRENCY = 10;
-async function runWithConcurrency(items, concurrency, fn) {
-    let index = 0;
-    async function worker() {
-        while (index < items.length) {
-            const i = index++;
-            await fn(items[i]);
-        }
-    }
-    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
-}
-async function fetchFileContents(octokit, owner, repo, ref, files, maxFileSize, redactSecretsEnabled) {
-    const results = [];
-    const filePaths = [...files].filter((filePath) => {
-        const ext = filePath.slice(filePath.lastIndexOf('.'));
-        return !BINARY_EXTENSIONS.has(ext.toLowerCase());
-    });
-    await runWithConcurrency(filePaths, FETCH_CONCURRENCY, async (filePath) => {
-        try {
-            const data = await ghRequest(() => octokit.rest.repos.getContent({ owner, repo, path: filePath, ref }), `getContent(${filePath})`);
-            if (!data.content || data.type !== 'file')
-                return;
-            let content = Buffer.from(data.content, 'base64').toString('utf-8');
-            let truncated = false;
-            if (content.length > maxFileSize) {
-                content = content.slice(0, maxFileSize) + '\n// ... [file truncated] ...';
-                truncated = true;
-            }
-            if (redactSecretsEnabled) {
-                const { redactSecrets } = await Promise.resolve().then(() => __importStar(__nccwpck_require__(6670)));
-                content = redactSecrets(content);
-            }
-            results.push({ path: filePath, content, truncated });
-        }
-        catch {
-            // File might not exist on the head branch (deleted file) — skip
-        }
-    });
-    return results;
-}
-// ─── Comment posting ────────────────────────────────────────────────
-async function postReviewComment(token, prNumber, body) {
-    const octokit = github.getOctokit(token);
-    const { owner, repo } = github.context.repo;
-    const marker = '<!-- ai-pr-reviewer -->';
-    let fullBody = `${marker}\n${body}`;
-    if (fullBody.length > 65536) {
-        core.warning('Review comment exceeds GitHub limit; truncating body.');
-        fullBody =
-            fullBody.slice(0, 65000) +
-                '\n\n... [review truncated — see workflow logs] ...';
-    }
-    await upsertComment(octokit, owner, repo, prNumber, marker, fullBody);
-}
-async function upsertComment(octokit, owner, repo, prNumber, marker, body) {
-    let existing;
-    let page = 1;
-    while (!existing) {
-        const { data: comments } = await octokit.rest.issues.listComments({
-            owner,
-            repo,
-            issue_number: prNumber,
-            per_page: 100,
-            page,
-        });
-        existing = comments.find((c) => c.body?.includes(marker));
-        if (existing || comments.length < 100)
-            break;
-        page++;
-    }
-    if (existing) {
-        await octokit.rest.issues.updateComment({
-            owner,
-            repo,
-            comment_id: existing.id,
-            body,
-        });
-        core.info(`Updated existing review comment #${existing.id}`);
-    }
-    else {
-        await octokit.rest.issues.createComment({
-            owner,
-            repo,
-            issue_number: prNumber,
-            body,
-        });
-        core.info('Posted new review comment');
-    }
-}
-// ─── Inline review comments ────────────────────────────────────────
-function findNearestValidLine(targetLine, validLines) {
-    if (validLines.size === 0)
-        return undefined;
-    let nearest;
-    let minDist = Infinity;
-    for (const line of validLines) {
-        const dist = Math.abs(line - targetLine);
-        if (dist < minDist) {
-            minDist = dist;
-            nearest = line;
-        }
-    }
-    return nearest;
-}
-async function postInlineReview(token, prNumber, diff, findings) {
-    const findingsWithLocation = findings.filter((f) => f.file && f.line);
-    if (findingsWithLocation.length === 0) {
-        return { posted: 0, skipped: 0 };
-    }
-    const validTargets = (0, diff_parser_1.parseDiffForCommentTargets)(diff);
-    const comments = [];
-    let skipped = 0;
-    for (const finding of findingsWithLocation) {
-        const fileTargets = validTargets.get(finding.file);
-        if (!fileTargets || fileTargets.size === 0) {
-            skipped++;
-            continue;
-        }
-        let line = finding.line;
-        let relocated = false;
-        if (!fileTargets.has(line)) {
-            const nearest = findNearestValidLine(line, fileTargets);
-            if (!nearest) {
-                skipped++;
-                continue;
-            }
-            line = nearest;
-            relocated = true;
-        }
-        const icon = finding.severity === 'critical'
-            ? '🔴'
-            : finding.severity === 'warning'
-                ? '🟡'
-                : '🔵';
-        let body = `${icon} **${finding.severity.toUpperCase()}** — ${finding.message}`;
-        if (relocated) {
-            body = `📍 *Refers to line ${finding.line}*\n\n${body}`;
-        }
-        comments.push({ path: finding.file, line, body });
-    }
-    if (comments.length === 0) {
-        return { posted: 0, skipped };
-    }
-    const octokit = github.getOctokit(token);
-    const { owner, repo } = github.context.repo;
-    const existingBotComments = await listExistingBotReviewComments(octokit, owner, repo, prNumber);
-    const newComments = comments.filter((c) => !existingBotComments.has(`${c.path}:${c.line}:${c.body}`));
-    if (newComments.length === 0) {
-        core.info('All inline findings already posted — skipping duplicates.');
-        return { posted: 0, skipped };
-    }
-    try {
-        await octokit.rest.pulls.createReview({
-            owner,
-            repo,
-            pull_number: prNumber,
-            event: 'COMMENT',
-            body: `🤖 AI PR Reviewer — ${newComments.length} inline finding(s)`,
-            comments: newComments.map((c) => ({
-                path: c.path,
-                line: c.line,
-                side: 'RIGHT',
-                body: c.body,
-            })),
-        });
-        core.info(`Posted ${newComments.length} inline review comment(s) (${comments.length - newComments.length} duplicates skipped)`);
-        return { posted: newComments.length, skipped };
-    }
-    catch (batchErr) {
-        const batchMsg = batchErr instanceof Error ? batchErr.message : String(batchErr);
-        core.warning(`Batch inline review failed (${batchMsg}). Falling back to individual comments.`);
-        const { data: prData } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
-        const commitId = prData.head.sha;
-        let posted = 0;
-        for (const c of newComments) {
-            try {
-                await octokit.rest.pulls.createReviewComment({
-                    owner,
-                    repo,
-                    pull_number: prNumber,
-                    path: c.path,
-                    line: c.line,
-                    side: 'RIGHT',
-                    body: c.body,
-                    commit_id: commitId,
-                });
-                posted++;
-            }
-            catch {
-                skipped++;
-                core.debug(`Skipped inline comment on ${c.path}:${c.line} (line not in diff)`);
-            }
-        }
-        core.info(`Posted ${posted} inline comment(s) individually (${skipped} skipped)`);
-        return { posted, skipped };
-    }
-}
-async function listExistingBotReviewComments(octokit, owner, repo, prNumber) {
-    const keys = new Set();
-    let page = 1;
-    while (true) {
-        const { data: comments } = await octokit.rest.pulls.listReviewComments({
-            owner,
-            repo,
-            pull_number: prNumber,
-            per_page: 100,
-            page,
-        });
-        for (const c of comments) {
-            if (c.body?.includes('**CRITICAL**') || c.body?.includes('**WARNING**') || c.body?.includes('**SUGGESTION**')) {
-                const line = c.line ?? c.original_line ?? 0;
-                keys.add(`${c.path}:${line}:${c.body}`);
-            }
-        }
-        if (comments.length < 100)
-            break;
-        page++;
-    }
-    return keys;
-}
-
-
-/***/ }),
-
-/***/ 7237:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.parseIgnorePatterns = parseIgnorePatterns;
-exports.shouldIgnoreFile = shouldIgnoreFile;
-exports.filterDiffByFiles = filterDiffByFiles;
-const DEFAULT_IGNORE_PATTERNS = [
-    // dependency directories
-    '**/node_modules/**',
-    '**/vendor/**',
-    // build outputs
-    '**/dist/**',
-    '**/build/**',
-    '**/.next/**',
-    '**/out/**',
-    '**/coverage/**',
-    // version-control internals
-    '**/.git/**',
-    // lock files (large, machine-generated, no review value)
-    '**/package-lock.json',
-    '**/yarn.lock',
-    '**/pnpm-lock.yaml',
-    '**/bun.lockb',
-    '**/Gemfile.lock',
-    '**/Cargo.lock',
-    '**/go.sum',
-    '**/poetry.lock',
-    // minified / bundled assets
-    '**/*.min.js',
-    '**/*.min.css',
-    '**/*.bundle.js',
-    // source maps
-    '**/*.map',
-    // generated / vendored code
-    '**/*.pb.go',
-    '**/*_generated.*',
-    '**/*.gen.*',
-    // test snapshots
-    '**/*.snap',
-    // binary / media assets
-    '**/*.png',
-    '**/*.jpg',
-    '**/*.jpeg',
-    '**/*.gif',
-    '**/*.ico',
-    '**/*.woff',
-    '**/*.woff2',
-    '**/*.ttf',
-    '**/*.pdf',
-    '**/*.zip',
-];
-function globToRegex(glob) {
-    const escaped = glob
-        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-        .replace(/\*\*/g, '{{GLOBSTAR}}')
-        .replace(/\*/g, '[^/]*')
-        .replace(/{{GLOBSTAR}}/g, '.*')
-        .replace(/\?/g, '.');
-    return new RegExp(`^${escaped}$`);
-}
-/** Match a filename against a single glob (supports ** and basename fallbacks). */
-function matchGlob(filename, glob) {
-    const basename = filename.includes('/')
-        ? filename.slice(filename.lastIndexOf('/') + 1)
-        : filename;
-    if (globToRegex(glob).test(filename))
-        return true;
-    // **/foo.json also matches root-level foo.json
-    if (glob.startsWith('**/')) {
-        const rest = glob.slice(3);
-        if (rest.endsWith('/**')) {
-            const dir = rest.slice(0, -3);
-            if (filename.includes(`/${dir}/`) || filename.startsWith(`${dir}/`))
-                return true;
-        }
-        else if (basename === rest || filename.endsWith(`/${rest}`)) {
-            return true;
-        }
-    }
-    // *.min.js matches basename
-    if (glob.startsWith('*.') && globToRegex(glob).test(basename))
-        return true;
-    return false;
-}
-function parseIgnorePatterns(input) {
-    const custom = input
-        .split(',')
-        .map((p) => p.trim())
-        .filter(Boolean);
-    return [...DEFAULT_IGNORE_PATTERNS, ...custom];
-}
-function shouldIgnoreFile(filename, patterns) {
-    const allPatterns = patterns.length > 0 ? patterns : DEFAULT_IGNORE_PATTERNS;
-    return allPatterns.some((glob) => matchGlob(filename, glob));
-}
-function filterDiffByFiles(diff, ignoredFiles) {
-    if (ignoredFiles.size === 0)
-        return diff;
-    const chunks = diff.split(/(?=^diff --git )/m);
-    const kept = [];
-    for (const chunk of chunks) {
-        if (!chunk.startsWith('diff --git ')) {
-            if (chunk)
-                kept.push(chunk);
-            continue;
-        }
-        const match = chunk.match(/^diff --git a\/(.+?) b\//m);
-        const file = match?.[1];
-        if (file && ignoredFiles.has(file))
-            continue;
-        kept.push(chunk);
-    }
-    return kept.join('');
 }
 
 
@@ -37882,7 +38222,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(7484));
 const config_1 = __nccwpck_require__(2973);
 const providers_1 = __nccwpck_require__(7486);
-const github_1 = __nccwpck_require__(9248);
+const github_1 = __nccwpck_require__(1631);
 const agents_1 = __nccwpck_require__(6758);
 const sanitize_1 = __nccwpck_require__(5540);
 const MAX_OUTPUT_BYTES = 900_000; // GitHub Actions output limit is ~1MB
