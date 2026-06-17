@@ -7,6 +7,8 @@ import {
   hasCriticalFindings,
   extractJson,
   sortFindingsForReview,
+  parseJudgeRewriteReview,
+  reconcileRewrittenFindings,
 } from '../findings';
 
 describe('parseStructuredReview', () => {
@@ -113,7 +115,7 @@ describe('parseStructuredReview', () => {
     assert.equal(result.findings[0].file, 'src/api.ts');
   });
 
-  it('caps findings at 8 and prioritises by severity', () => {
+  it('caps findings at 8 by default and prioritises by severity', () => {
     const findings = [];
     for (let i = 0; i < 12; i++) {
       findings.push({
@@ -129,6 +131,24 @@ describe('parseStructuredReview', () => {
     assert.ok(result.findings.length <= 8);
     assert.equal(result.findings[0].severity, 'critical');
     assert.equal(result.findings[1].severity, 'critical');
+  });
+
+  it('does not cap findings when capFindings is false', () => {
+    const findings = [];
+    for (let i = 0; i < 12; i++) {
+      findings.push({
+        category: 'tests',
+        severity: 'suggestion',
+        confidence: 'high',
+        file: `src/file${i}.ts`,
+        line: i + 1,
+        message: `Issue number ${i} in the code → causes problem → fix it this way`,
+      });
+    }
+    const result = parseStructuredReview(JSON.stringify({ summary: 'many issues', findings }), {
+      capFindings: false,
+    });
+    assert.equal(result.findings.length, 12);
   });
 
   it('extracts JSON from markdown fences', () => {
@@ -229,6 +249,64 @@ describe('sortFindingsForReview', () => {
       'warning:src/a.ts',
       'warning:src/z.ts',
     ]);
+  });
+});
+
+describe('parseJudgeRewriteReview', () => {
+  it('returns all findings without capping', () => {
+    const findings = Array.from({ length: 12 }, (_, i) => ({
+      category: 'code',
+      severity: 'warning',
+      confidence: 'high',
+      file: `src/file${i}.ts`,
+      line: i + 1,
+      message: `Rewritten message ${i}. Failure mode ${i}. Fix ${i}.`,
+    }));
+    const review = parseJudgeRewriteReview(
+      JSON.stringify({ summary: 'Summary text.', findings }),
+    );
+    assert.equal(review.findings.length, 12);
+  });
+});
+
+describe('reconcileRewrittenFindings', () => {
+  it('preserves input count when rewrite omits findings', () => {
+    const input = [
+      {
+        category: 'security',
+        severity: 'critical' as const,
+        confidence: 'high' as const,
+        file: 'src/a.ts',
+        line: 1,
+        message: 'original one',
+      },
+      {
+        category: 'code',
+        severity: 'warning' as const,
+        confidence: 'medium' as const,
+        file: 'src/b.ts',
+        line: 2,
+        message: 'original two',
+      },
+    ];
+    const rewritten = {
+      summary: 'PR summary.',
+      findings: [
+        {
+          category: 'security',
+          severity: 'critical' as const,
+          confidence: 'high' as const,
+          file: 'src/a.ts',
+          line: 1,
+          message: 'rewritten one',
+        },
+      ],
+    };
+    const result = reconcileRewrittenFindings(input, rewritten);
+    assert.equal(result.findings.length, 2);
+    assert.equal(result.findings[0].message, 'rewritten one');
+    assert.equal(result.findings[1].message, 'original two');
+    assert.equal(result.summary, 'PR summary.');
   });
 });
 

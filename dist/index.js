@@ -36090,8 +36090,15 @@ async function runJudge(provider, specialistResults, pr, config, _sharedContext,
     const dedupResult = await callWithParseRetry('judge/dedup', provider, (0, prompts_1.buildJudgeDedupSystemPrompt)(config), (0, prompts_1.buildJudgeDedupUserPrompt)(allFindings), config.timeoutMs, findings_1.parseDedupedFindings);
     core.info(`[judge/dedup] ${dedupResult.value.length} finding(s) after dedup (${dedupResult.tokensUsed} tokens)`);
     core.info('[judge/rewrite] Rewriting finding messages and writing summary...');
-    const rewriteResult = await callWithParseRetry('judge/rewrite', provider, (0, prompts_1.buildJudgeRewriteSystemPrompt)(config), (0, prompts_1.buildJudgeRewriteUserPrompt)(dedupResult.value, pr), config.timeoutMs, findings_1.parseStructuredReview);
-    const structured = rewriteResult.value;
+    const rewriteResult = await callWithParseRetry('judge/rewrite', provider, (0, prompts_1.buildJudgeRewriteSystemPrompt)(config), (0, prompts_1.buildJudgeRewriteUserPrompt)(dedupResult.value, pr), config.timeoutMs, findings_1.parseJudgeRewriteReview);
+    const parsedRewrite = rewriteResult.value;
+    if (parsedRewrite.findings.length < dedupResult.value.length) {
+        core.warning(`[judge/rewrite] Rewrite returned ${parsedRewrite.findings.length}/${dedupResult.value.length} finding(s) — restoring missing findings with original messages`);
+    }
+    const structured = (0, findings_1.reconcileRewrittenFindings)(dedupResult.value, parsedRewrite);
+    if (structured.findings.length !== dedupResult.value.length) {
+        core.error(`[judge/rewrite] Finding count mismatch after reconcile: ${structured.findings.length} vs ${dedupResult.value.length}`);
+    }
     const totalTokens = dedupResult.tokensUsed + rewriteResult.tokensUsed;
     const inputTokens = dedupResult.inputTokens + rewriteResult.inputTokens;
     const outputTokens = dedupResult.outputTokens + rewriteResult.outputTokens;
@@ -37469,6 +37476,8 @@ function estimateCost(model, inputTokens, outputTokens) {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.parseStructuredReview = parseStructuredReview;
+exports.parseJudgeRewriteReview = parseJudgeRewriteReview;
+exports.reconcileRewrittenFindings = reconcileRewrittenFindings;
 exports.parseSpecialistFindings = parseSpecialistFindings;
 exports.hasCriticalFindings = hasCriticalFindings;
 exports.sortFindingsForReview = sortFindingsForReview;
@@ -37504,7 +37513,8 @@ function isVagueFinding(message) {
     const parts = message.split('→').map((p) => stripBrackets(p.trim()));
     return parts.some((part) => VAGUE_PATTERNS.some((pattern) => pattern.test(part)));
 }
-function parseStructuredReview(raw) {
+function parseStructuredReview(raw, options = {}) {
+    const { capFindings = true, filterVague = true, filterLowConfidence = true, } = options;
     const json = extractJson(raw);
     const parsed = JSON.parse(json);
     const summary = typeof parsed.summary === 'string' ? parsed.summary : '';
@@ -37524,9 +37534,9 @@ function parseStructuredReview(raw) {
             const confidence = VALID_CONFIDENCES.has(String(f.confidence ?? '').toLowerCase())
                 ? String(f.confidence).toLowerCase()
                 : 'medium';
-            if (confidence === 'low')
+            if (filterLowConfidence && confidence === 'low')
                 continue;
-            if (isVagueFinding(f.message))
+            if (filterVague && isVagueFinding(f.message))
                 continue;
             if (!f.file || typeof f.file !== 'string')
                 continue;
@@ -37542,7 +37552,55 @@ function parseStructuredReview(raw) {
         }
     }
     const sorted = sortFindingsForReview(findings);
-    return { summary, findings: sorted.slice(0, MAX_FINDINGS) };
+    return {
+        summary,
+        findings: capFindings ? sorted.slice(0, MAX_FINDINGS) : sorted,
+    };
+}
+/** Parse judge rewrite output — preserve every finding, no cap or quality filtering. */
+function parseJudgeRewriteReview(raw) {
+    return parseStructuredReview(raw, {
+        capFindings: false,
+        filterVague: false,
+        filterLowConfidence: false,
+    });
+}
+function findingMatchKeys(f) {
+    const keys = [`${f.category}\0${f.file}\0${String(f.line ?? '')}`];
+    if (f.codeSnippet) {
+        keys.push(`${f.category}\0${f.file}\0${f.codeSnippet.trim()}`);
+    }
+    return keys;
+}
+/**
+ * Apply rewritten messages onto the deduped input list.
+ * Input count is the source of truth — unmatched findings keep their original message.
+ */
+function reconcileRewrittenFindings(input, rewritten) {
+    const available = [...rewritten.findings];
+    const used = new Set();
+    const findMatchIndex = (original) => {
+        for (const key of findingMatchKeys(original)) {
+            const idx = available.findIndex((candidate, i) => !used.has(i) && findingMatchKeys(candidate).includes(key));
+            if (idx !== -1)
+                return idx;
+        }
+        return available.findIndex((candidate, i) => !used.has(i) &&
+            candidate.category === original.category &&
+            candidate.file === original.file &&
+            candidate.line === original.line);
+    };
+    const merged = input.map((original) => {
+        const idx = findMatchIndex(original);
+        if (idx === -1)
+            return original;
+        used.add(idx);
+        return { ...original, message: available[idx].message };
+    });
+    return {
+        summary: rewritten.summary,
+        findings: sortFindingsForReview(merged),
+    };
 }
 /**
  * Parse output from a specialist agent where category is known externally.

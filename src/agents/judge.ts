@@ -1,8 +1,9 @@
 import * as core from '@actions/core';
 import { ReviewConfig } from '../config';
 import {
-  parseStructuredReview,
+  parseJudgeRewriteReview,
   parseDedupedFindings,
+  reconcileRewrittenFindings,
   StructuredReview,
 } from '../findings';
 import { AIProvider } from '../providers';
@@ -109,10 +110,24 @@ export async function runJudge(
     buildJudgeRewriteSystemPrompt(config),
     buildJudgeRewriteUserPrompt(dedupResult.value, pr),
     config.timeoutMs,
-    parseStructuredReview,
+    parseJudgeRewriteReview,
   );
 
-  const structured = rewriteResult.value;
+  const parsedRewrite = rewriteResult.value;
+
+  if (parsedRewrite.findings.length < dedupResult.value.length) {
+    core.warning(
+      `[judge/rewrite] Rewrite returned ${parsedRewrite.findings.length}/${dedupResult.value.length} finding(s) — restoring missing findings with original messages`,
+    );
+  }
+
+  const structured = reconcileRewrittenFindings(dedupResult.value, parsedRewrite);
+
+  if (structured.findings.length !== dedupResult.value.length) {
+    core.error(
+      `[judge/rewrite] Finding count mismatch after reconcile: ${structured.findings.length} vs ${dedupResult.value.length}`,
+    );
+  }
 
   const totalTokens =
     dedupResult.tokensUsed + rewriteResult.tokensUsed;

@@ -24,6 +24,15 @@ const VALID_CONFIDENCES = new Set<string>(['high', 'medium', 'low']);
 
 const MAX_FINDINGS = 8;
 
+export interface ParseStructuredReviewOptions {
+  /** When true (default), return at most MAX_FINDINGS after sorting. */
+  capFindings?: boolean;
+  /** When true (default), drop findings with vague phrasing. */
+  filterVague?: boolean;
+  /** When true (default), drop low-confidence findings. */
+  filterLowConfidence?: boolean;
+}
+
 const VAGUE_PATTERNS = [
   /^ensure\b/i,
   /^make sure\b/i,
@@ -56,7 +65,16 @@ function isVagueFinding(message: string): boolean {
   );
 }
 
-export function parseStructuredReview(raw: string): StructuredReview {
+export function parseStructuredReview(
+  raw: string,
+  options: ParseStructuredReviewOptions = {},
+): StructuredReview {
+  const {
+    capFindings = true,
+    filterVague = true,
+    filterLowConfidence = true,
+  } = options;
+
   const json = extractJson(raw);
   const parsed = JSON.parse(json) as Partial<StructuredReview>;
 
@@ -76,9 +94,9 @@ export function parseStructuredReview(raw: string): StructuredReview {
         ? (String(f.confidence).toLowerCase() as Confidence)
         : 'medium';
 
-      if (confidence === 'low') continue;
+      if (filterLowConfidence && confidence === 'low') continue;
 
-      if (isVagueFinding(f.message)) continue;
+      if (filterVague && isVagueFinding(f.message)) continue;
 
       if (!f.file || typeof f.file !== 'string') continue;
 
@@ -96,7 +114,67 @@ export function parseStructuredReview(raw: string): StructuredReview {
 
   const sorted = sortFindingsForReview(findings);
 
-  return { summary, findings: sorted.slice(0, MAX_FINDINGS) };
+  return {
+    summary,
+    findings: capFindings ? sorted.slice(0, MAX_FINDINGS) : sorted,
+  };
+}
+
+/** Parse judge rewrite output — preserve every finding, no cap or quality filtering. */
+export function parseJudgeRewriteReview(raw: string): StructuredReview {
+  return parseStructuredReview(raw, {
+    capFindings: false,
+    filterVague: false,
+    filterLowConfidence: false,
+  });
+}
+
+function findingMatchKeys(f: Finding): string[] {
+  const keys = [`${f.category}\0${f.file}\0${String(f.line ?? '')}`];
+  if (f.codeSnippet) {
+    keys.push(`${f.category}\0${f.file}\0${f.codeSnippet.trim()}`);
+  }
+  return keys;
+}
+
+/**
+ * Apply rewritten messages onto the deduped input list.
+ * Input count is the source of truth — unmatched findings keep their original message.
+ */
+export function reconcileRewrittenFindings(
+  input: Finding[],
+  rewritten: StructuredReview,
+): StructuredReview {
+  const available = [...rewritten.findings];
+  const used = new Set<number>();
+
+  const findMatchIndex = (original: Finding): number => {
+    for (const key of findingMatchKeys(original)) {
+      const idx = available.findIndex(
+        (candidate, i) => !used.has(i) && findingMatchKeys(candidate).includes(key),
+      );
+      if (idx !== -1) return idx;
+    }
+    return available.findIndex(
+      (candidate, i) =>
+        !used.has(i) &&
+        candidate.category === original.category &&
+        candidate.file === original.file &&
+        candidate.line === original.line,
+    );
+  };
+
+  const merged = input.map((original) => {
+    const idx = findMatchIndex(original);
+    if (idx === -1) return original;
+    used.add(idx);
+    return { ...original, message: available[idx].message };
+  });
+
+  return {
+    summary: rewritten.summary,
+    findings: sortFindingsForReview(merged),
+  };
 }
 
 /**
