@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { shouldIgnoreFile, filterDiffByFiles } from '../ignore';
+import { shouldIgnoreFile, filterDiffByFiles } from '../context/ignore';
 
 describe('shouldIgnoreFile', () => {
   it('ignores lockfiles by default', () => {
@@ -21,6 +21,16 @@ describe('shouldIgnoreFile', () => {
       shouldIgnoreFile('src/generated/foo.ts', ['**/generated/**']),
       true,
     );
+  });
+
+  it('ignores mocks and test fixtures', () => {
+    assert.equal(shouldIgnoreFile('__mocks__/module.js', []), true);
+    assert.equal(shouldIgnoreFile('src/foo/__testdata__.js', []), true);
+    assert.equal(shouldIgnoreFile('src/foo/__fixtures__/bar.js', []), true);
+  });
+
+  it('does not ignore .env.example — reviewed as diff-only via risk scorer', () => {
+    assert.equal(shouldIgnoreFile('.env.example', []), false);
   });
 });
 

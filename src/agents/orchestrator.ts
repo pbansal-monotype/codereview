@@ -123,10 +123,8 @@ export async function runReview(
     }
   }
 
-  // Stage 2: Judge — verify, deduplicate, recalibrate, cap the final list.
-  // Receives the same sharedContext (diff + full files) so it can check every
-  // finding against real code.
-  // Fail-closed: if the judge itself crashes (including unrecoverable parse failures)
+  // Stage 2: Judge — deduplicate then rewrite (two agent calls).
+  // Fail-closed: if either judge agent crashes (including unrecoverable parse failures)
   // we block the PR rather than silently shipping unverified findings.
   let judgeTokens = { input: 0, output: 0 };
   let structured;
@@ -155,7 +153,7 @@ export async function runReview(
       config,
       categories: categoryIds,
       totalTokens: { input: totalInput, output: totalOutput },
-      apiCalls: activeCategories.length + 1,
+      apiCalls: activeCategories.length + 2,
       specialistResults,
       failClosed: true,
       failReason: message,
@@ -186,7 +184,7 @@ export async function runReview(
   const totalOutput =
     specialistResults.reduce((sum, r) => sum + r.tokens.output, 0) +
     judgeTokens.output;
-  const apiCalls = activeCategories.length + 1;
+  const apiCalls = activeCategories.length + 2;
 
   const markdown = formatReviewMarkdown({
     structured,

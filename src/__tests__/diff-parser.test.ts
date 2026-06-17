@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseDiffForCommentTargets } from '../diff-parser';
+import { parseDiffForCommentTargets } from '../context/diff';
 
 describe('parseDiffForCommentTargets', () => {
   it('extracts valid line numbers from a simple diff', () => {

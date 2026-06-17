@@ -24,6 +24,15 @@ const VALID_CONFIDENCES = new Set<string>(['high', 'medium', 'low']);
 
 const MAX_FINDINGS = 8;
 
+export interface ParseStructuredReviewOptions {
+  /** When true (default), return at most MAX_FINDINGS after sorting. */
+  capFindings?: boolean;
+  /** When true (default), drop findings with vague phrasing. */
+  filterVague?: boolean;
+  /** When true (default), drop low-confidence findings. */
+  filterLowConfidence?: boolean;
+}
+
 const VAGUE_PATTERNS = [
   /^ensure\b/i,
   /^make sure\b/i,
@@ -56,7 +65,16 @@ function isVagueFinding(message: string): boolean {
   );
 }
 
-export function parseStructuredReview(raw: string): StructuredReview {
+export function parseStructuredReview(
+  raw: string,
+  options: ParseStructuredReviewOptions = {},
+): StructuredReview {
+  const {
+    capFindings = true,
+    filterVague = true,
+    filterLowConfidence = true,
+  } = options;
+
   const json = extractJson(raw);
   const parsed = JSON.parse(json) as Partial<StructuredReview>;
 
@@ -76,9 +94,9 @@ export function parseStructuredReview(raw: string): StructuredReview {
         ? (String(f.confidence).toLowerCase() as Confidence)
         : 'medium';
 
-      if (confidence === 'low') continue;
+      if (filterLowConfidence && confidence === 'low') continue;
 
-      if (isVagueFinding(f.message)) continue;
+      if (filterVague && isVagueFinding(f.message)) continue;
 
       if (!f.file || typeof f.file !== 'string') continue;
 
@@ -94,15 +112,69 @@ export function parseStructuredReview(raw: string): StructuredReview {
     }
   }
 
-  const sorted = findings.sort((a, b) => {
-    const severityOrder: Record<string, number> = { critical: 0, warning: 1, suggestion: 2 };
-    const confOrder: Record<string, number> = { high: 0, medium: 1 };
-    const sDiff = (severityOrder[a.severity] ?? 2) - (severityOrder[b.severity] ?? 2);
-    if (sDiff !== 0) return sDiff;
-    return (confOrder[a.confidence] ?? 1) - (confOrder[b.confidence] ?? 1);
+  const sorted = sortFindingsForReview(findings);
+
+  return {
+    summary,
+    findings: capFindings ? sorted.slice(0, MAX_FINDINGS) : sorted,
+  };
+}
+
+/** Parse judge rewrite output — preserve every finding, no cap or quality filtering. */
+export function parseJudgeRewriteReview(raw: string): StructuredReview {
+  return parseStructuredReview(raw, {
+    capFindings: false,
+    filterVague: false,
+    filterLowConfidence: false,
+  });
+}
+
+function findingMatchKeys(f: Finding): string[] {
+  const keys = [`${f.category}\0${f.file}\0${String(f.line ?? '')}`];
+  if (f.codeSnippet) {
+    keys.push(`${f.category}\0${f.file}\0${f.codeSnippet.trim()}`);
+  }
+  return keys;
+}
+
+/**
+ * Apply rewritten messages onto the deduped input list.
+ * Input count is the source of truth — unmatched findings keep their original message.
+ */
+export function reconcileRewrittenFindings(
+  input: Finding[],
+  rewritten: StructuredReview,
+): StructuredReview {
+  const available = [...rewritten.findings];
+  const used = new Set<number>();
+
+  const findMatchIndex = (original: Finding): number => {
+    for (const key of findingMatchKeys(original)) {
+      const idx = available.findIndex(
+        (candidate, i) => !used.has(i) && findingMatchKeys(candidate).includes(key),
+      );
+      if (idx !== -1) return idx;
+    }
+    return available.findIndex(
+      (candidate, i) =>
+        !used.has(i) &&
+        candidate.category === original.category &&
+        candidate.file === original.file &&
+        candidate.line === original.line,
+    );
+  };
+
+  const merged = input.map((original) => {
+    const idx = findMatchIndex(original);
+    if (idx === -1) return original;
+    used.add(idx);
+    return { ...original, message: available[idx].message };
   });
 
-  return { summary, findings: sorted.slice(0, MAX_FINDINGS) };
+  return {
+    summary: rewritten.summary,
+    findings: sortFindingsForReview(merged),
+  };
 }
 
 /**
@@ -149,6 +221,65 @@ export function hasCriticalFindings(review: StructuredReview): boolean {
   return review.findings.some((f) => f.severity === 'critical');
 }
 
+export function sortFindingsForReview(findings: Finding[]): Finding[] {
+  const severityOrder: Record<string, number> = { critical: 0, warning: 1, suggestion: 2 };
+  return [...findings].sort((a, b) => {
+    const sDiff = (severityOrder[a.severity] ?? 2) - (severityOrder[b.severity] ?? 2);
+    if (sDiff !== 0) return sDiff;
+    return (a.file ?? '').localeCompare(b.file ?? '');
+  });
+}
+
+/**
+ * Parse output from the judge dedup agent.
+ * Accepts { "findings": [...] } (required by OpenAI/Azure json_object mode) or a bare array.
+ */
+export function parseDedupedFindings(raw: string): Finding[] {
+  const json = extractJson(raw);
+  const parsed = JSON.parse(json) as unknown;
+  const items = coerceFindingsArray(parsed);
+
+  const findings: Finding[] = [];
+
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const f = item as Partial<Finding>;
+    const severity = String(f.severity ?? '').toLowerCase();
+    if (!VALID_SEVERITIES.has(severity)) continue;
+    if (!f.message || typeof f.message !== 'string') continue;
+    if (!f.category || typeof f.category !== 'string') continue;
+    if (!f.file || typeof f.file !== 'string') continue;
+
+    const confidence = VALID_CONFIDENCES.has(String(f.confidence ?? '').toLowerCase())
+      ? (String(f.confidence).toLowerCase() as Confidence)
+      : 'medium';
+
+    findings.push({
+      category: f.category,
+      severity: severity as Severity,
+      confidence,
+      file: f.file,
+      line: typeof f.line === 'number' ? f.line : undefined,
+      codeSnippet: typeof f.codeSnippet === 'string' ? f.codeSnippet.trim() : undefined,
+      message: f.message,
+    });
+  }
+
+  return findings;
+}
+
+function coerceFindingsArray(parsed: unknown): unknown[] {
+  if (Array.isArray(parsed)) return parsed;
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    Array.isArray((parsed as { findings?: unknown }).findings)
+  ) {
+    return (parsed as { findings: unknown[] }).findings;
+  }
+  throw new Error('Dedup agent output must be a JSON array or { "findings": [...] } object');
+}
+
 export function extractJson(text: string): string {
   const trimmed = text.trim();
 
@@ -158,7 +289,32 @@ export function extractJson(text: string): string {
     return last[1].trim();
   }
 
-  const start = trimmed.indexOf('{');
+  const arrayStart = trimmed.indexOf('[');
+  const objectStart = trimmed.indexOf('{');
+
+  if (arrayStart !== -1 && (objectStart === -1 || arrayStart < objectStart)) {
+    const arrayEnd = trimmed.lastIndexOf(']');
+    if (arrayEnd > arrayStart) {
+      const candidate = trimmed.slice(arrayStart, arrayEnd + 1);
+      try {
+        JSON.parse(candidate);
+        return candidate;
+      } catch {
+        for (let i = arrayEnd; i > arrayStart; i--) {
+          if (trimmed[i] !== ']') continue;
+          const slice = trimmed.slice(arrayStart, i + 1);
+          try {
+            JSON.parse(slice);
+            return slice;
+          } catch {
+            continue;
+          }
+        }
+      }
+    }
+  }
+
+  const start = objectStart;
   const end = trimmed.lastIndexOf('}');
   if (start !== -1 && end > start) {
     const candidate = trimmed.slice(start, end + 1);

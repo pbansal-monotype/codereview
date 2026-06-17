@@ -68,9 +68,9 @@ inputs:
     default: ''
 
   max_diff_size:
-    description: 'Maximum diff size in characters before smart truncation (default 60000)'
+    description: 'Maximum diff size in characters before smart truncation (default 300000). The risk scorer handles fine-grained budget allocation, so this is a hard safety cap only.'
     required: false
-    default: '60000'
+    default: '300000'
 
   post_review_comment:
     description: 'Post the review summary as a PR comment (true/false)'

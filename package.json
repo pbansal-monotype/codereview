@@ -6,7 +6,8 @@
   "scripts": {
     "build": "ncc build src/index.ts -o dist --source-map --license licenses.txt",
     "lint": "tsc --noEmit",
-    "test": "tsc -p tsconfig.test.json && node --test dist-test/__tests__"
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/__tests__",
+    "test-agent": "npx ts-node src/eval/run-agent-local.ts"
   },
   "keywords": [
     "github-action",

@@ -16,12 +16,33 @@ export interface StructuredReview {
     /** True when the judge output was degraded (e.g. parse failure fallback) and findings have not been verified. */
     unverified?: boolean;
 }
-export declare function parseStructuredReview(raw: string): StructuredReview;
+export interface ParseStructuredReviewOptions {
+    /** When true (default), return at most MAX_FINDINGS after sorting. */
+    capFindings?: boolean;
+    /** When true (default), drop findings with vague phrasing. */
+    filterVague?: boolean;
+    /** When true (default), drop low-confidence findings. */
+    filterLowConfidence?: boolean;
+}
+export declare function parseStructuredReview(raw: string, options?: ParseStructuredReviewOptions): StructuredReview;
+/** Parse judge rewrite output — preserve every finding, no cap or quality filtering. */
+export declare function parseJudgeRewriteReview(raw: string): StructuredReview;
+/**
+ * Apply rewritten messages onto the deduped input list.
+ * Input count is the source of truth — unmatched findings keep their original message.
+ */
+export declare function reconcileRewrittenFindings(input: Finding[], rewritten: StructuredReview): StructuredReview;
 /**
  * Parse output from a specialist agent where category is known externally.
  * Simpler schema: { findings: [{ severity, confidence, file, line, message }] }
  */
 export declare function parseSpecialistFindings(raw: string, categoryId: string): Finding[];
 export declare function hasCriticalFindings(review: StructuredReview): boolean;
+export declare function sortFindingsForReview(findings: Finding[]): Finding[];
+/**
+ * Parse output from the judge dedup agent.
+ * Accepts { "findings": [...] } (required by OpenAI/Azure json_object mode) or a bare array.
+ */
+export declare function parseDedupedFindings(raw: string): Finding[];
 export declare function extractJson(text: string): string;
 export declare function formatFindingsMarkdown(structured: StructuredReview, categoryLabels: Record<string, string>): string;

@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 import {
   parseStructuredReview,
   parseSpecialistFindings,
+  parseDedupedFindings,
   hasCriticalFindings,
   extractJson,
+  sortFindingsForReview,
+  parseJudgeRewriteReview,
+  reconcileRewrittenFindings,
 } from '../findings';
 
 describe('parseStructuredReview', () => {
@@ -111,7 +115,7 @@ describe('parseStructuredReview', () => {
     assert.equal(result.findings[0].file, 'src/api.ts');
   });
 
-  it('caps findings at 8 and prioritises by severity', () => {
+  it('caps findings at 8 by default and prioritises by severity', () => {
     const findings = [];
     for (let i = 0; i < 12; i++) {
       findings.push({
@@ -129,9 +133,35 @@ describe('parseStructuredReview', () => {
     assert.equal(result.findings[1].severity, 'critical');
   });
 
+  it('does not cap findings when capFindings is false', () => {
+    const findings = [];
+    for (let i = 0; i < 12; i++) {
+      findings.push({
+        category: 'tests',
+        severity: 'suggestion',
+        confidence: 'high',
+        file: `src/file${i}.ts`,
+        line: i + 1,
+        message: `Issue number ${i} in the code → causes problem → fix it this way`,
+      });
+    }
+    const result = parseStructuredReview(JSON.stringify({ summary: 'many issues', findings }), {
+      capFindings: false,
+    });
+    assert.equal(result.findings.length, 12);
+  });
+
   it('extracts JSON from markdown fences', () => {
     const raw = '```json\n{"summary":"ok","findings":[]}\n```';
     assert.equal(extractJson(raw), '{"summary":"ok","findings":[]}');
+  });
+
+  it('extracts JSON arrays from markdown fences', () => {
+    const raw = '```json\n[{"category":"security","severity":"warning","file":"src/a.ts","message":"x"}]\n```';
+    assert.equal(
+      extractJson(raw),
+      '[{"category":"security","severity":"warning","file":"src/a.ts","message":"x"}]',
+    );
   });
 
   it('detects critical findings reliably', () => {
@@ -158,6 +188,141 @@ describe('parseStructuredReview', () => {
       }),
     );
     assert.equal(review.findings.length, 1);
+  });
+});
+
+describe('parseDedupedFindings', () => {
+  it('parses a bare JSON array of findings', () => {
+    const raw = JSON.stringify([
+      {
+        category: 'security',
+        severity: 'critical',
+        confidence: 'high',
+        file: 'src/auth.ts',
+        line: 10,
+        codeSnippet: 'const x = 1;',
+        message: 'Missing auth check',
+      },
+    ]);
+    const findings = parseDedupedFindings(raw);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].category, 'security');
+    assert.equal(findings[0].codeSnippet, 'const x = 1;');
+  });
+
+  it('parses a { findings: [...] } object', () => {
+    const raw = JSON.stringify({
+      findings: [
+        {
+          category: 'security',
+          severity: 'critical',
+          confidence: 'high',
+          file: 'src/auth.ts',
+          line: 10,
+          codeSnippet: 'const x = 1;',
+          message: 'Missing auth check',
+        },
+      ],
+    });
+    const findings = parseDedupedFindings(raw);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].category, 'security');
+  });
+
+  it('throws when output has no findings array', () => {
+    assert.throws(
+      () => parseDedupedFindings('{"summary":"ok"}'),
+      /findings/i,
+    );
+  });
+});
+
+describe('sortFindingsForReview', () => {
+  it('sorts by severity then file path', () => {
+    const sorted = sortFindingsForReview([
+      { category: 'code', severity: 'warning', confidence: 'high', file: 'src/z.ts', message: 'a' },
+      { category: 'code', severity: 'critical', confidence: 'high', file: 'src/b.ts', message: 'b' },
+      { category: 'code', severity: 'warning', confidence: 'high', file: 'src/a.ts', message: 'c' },
+    ]);
+    assert.deepEqual(sorted.map((f) => `${f.severity}:${f.file}`), [
+      'critical:src/b.ts',
+      'warning:src/a.ts',
+      'warning:src/z.ts',
+    ]);
+  });
+});
+
+describe('parseJudgeRewriteReview', () => {
+  it('returns all findings without capping', () => {
+    const findings = Array.from({ length: 12 }, (_, i) => ({
+      category: 'code',
+      severity: 'warning',
+      confidence: 'high',
+      file: `src/file${i}.ts`,
+      line: i + 1,
+      message: `Rewritten message ${i}. Failure mode ${i}. Fix ${i}.`,
+    }));
+    const review = parseJudgeRewriteReview(
+      JSON.stringify({ summary: 'Summary text.', findings }),
+    );
+    assert.equal(review.findings.length, 12);
+  });
+});
+
+describe('reconcileRewrittenFindings', () => {
+  it('preserves input count when rewrite omits findings', () => {
+    const input = [
+      {
+        category: 'security',
+        severity: 'critical' as const,
+        confidence: 'high' as const,
+        file: 'src/a.ts',
+        line: 1,
+        message: 'original one',
+      },
+      {
+        category: 'code',
+        severity: 'warning' as const,
+        confidence: 'medium' as const,
+        file: 'src/b.ts',
+        line: 2,
+        message: 'original two',
+      },
+    ];
+    const rewritten = {
+      summary: 'PR summary.',
+      findings: [
+        {
+          category: 'security',
+          severity: 'critical' as const,
+          confidence: 'high' as const,
+          file: 'src/a.ts',
+          line: 1,
+          message: 'rewritten one',
+        },
+      ],
+    };
+    const result = reconcileRewrittenFindings(input, rewritten);
+    assert.equal(result.findings.length, 2);
+    assert.equal(result.findings[0].message, 'rewritten one');
+    assert.equal(result.findings[1].message, 'original two');
+    assert.equal(result.summary, 'PR summary.');
+  });
+});
+
+describe('parseStructuredReview sort order', () => {
+  it('sorts by severity then file path', () => {
+    const review = parseStructuredReview(
+      JSON.stringify({
+        summary: 'Issues',
+        findings: [
+          { category: 'code', severity: 'warning', confidence: 'high', file: 'src/z.ts', message: 'Issue z → risk → fix' },
+          { category: 'code', severity: 'critical', confidence: 'high', file: 'src/b.ts', message: 'Issue b → risk → fix' },
+          { category: 'code', severity: 'warning', confidence: 'high', file: 'src/a.ts', message: 'Issue a → risk → fix' },
+        ],
+      }),
+    );
+    assert.deepEqual(review.findings.map((f) => f.file), ['src/b.ts', 'src/a.ts', 'src/z.ts']);
   });
 });
 

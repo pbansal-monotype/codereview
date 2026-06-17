@@ -22,6 +22,14 @@ const RATES: Array<{ pattern: string; rate: TokenRate }> = [
   { pattern: 'gpt-4', rate: { input: 30, output: 60 } },
   { pattern: 'o1-mini', rate: { input: 3, output: 12 } },
   { pattern: 'o1', rate: { input: 15, output: 60 } },
+  // Azure
+  { pattern: 'gpt-5.4-nano', rate: { input: 0.15, output: 0.6 } },
+  { pattern: 'gpt-5.4', rate: { input: 2.5, output: 10 } },
+  { pattern: 'gpt-5.4-mini', rate: { input: 0.15, output: 0.6 } },
+  { pattern: 'gpt-5.4-small', rate: { input: 0.15, output: 0.6 } },
+  { pattern: 'gpt-5.4-medium', rate: { input: 0.15, output: 0.6 } },
+  { pattern: 'gpt-5.4-large', rate: { input: 0.15, output: 0.6 } },
+  { pattern: 'gpt-5.4-xlarge', rate: { input: 0.15, output: 0.6 } },
 ];
 
 export function estimateCost(

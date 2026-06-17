@@ -46,6 +46,31 @@ Two complementary eval sets:
 - Paired Wilcoxon signed-rank test on precision across topologies (non-parametric, works with
   small n). Significance threshold: p < 0.05.
 
+## Local agent testing (single diff file)
+
+Use `run-agent-local.ts` to run one guideline specialist or the judge against a local
+unified diff — useful for prompt iteration without GitHub or the full orchestrator.
+
+```bash
+# Run the security specialist on a GitHub Actions debug log or raw diff
+npx ts-node src/eval/run-agent-local.ts Debug/securitylogs.txt --agent security
+
+# Azure is the default provider — set AZURE_API_KEY / AZURE_ENDPOINT, or edit
+# HARDCODED_AZURE_* constants at the top of run-agent-local.ts
+npx ts-node src/eval/run-agent-local.ts changes.diff --agent performance --files-dir ./my-repo
+
+# Run judge only (findings + diff extracted from GitHub Actions debug log)
+npx ts-node src/eval/run-agent-local.ts --agent judge --findings Debug/judge.txt
+
+# Or pass diff separately
+npx ts-node src/eval/run-agent-local.ts Debug/securitylogs.txt --agent judge --findings specialists.json
+
+# Run all specialists + judge end-to-end
+npm run test-agent -- Debug/securitylogs.txt --agent all
+```
+
+Agents: `security`, `tests`, `performance`, `code`, `judge`, `all`.
+
 ## Running the eval
 
 ```bash
