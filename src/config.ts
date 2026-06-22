@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import { parseIgnorePatterns } from './context/ignore';
 import { DEFAULT_GUIDELINES } from './agents/guidelines';
+import type { StoreType } from './state';
 
 export interface CategoryGuidelines {
   enabled: boolean;
@@ -21,18 +22,12 @@ export interface ReviewConfig {
     code: CategoryGuidelines;
     custom: CategoryGuidelines;
   };
-  customPrompt: string;
-  extraInstructions: string;
-  maxDiffSize: number;
-  postReviewComment: boolean;
-  postInlineComments: boolean;
-  failOnCritical: boolean;
+  repoContext: string;
+  reviewPolicy: string;
   ignorePatterns: string[];
-  redactSecrets: boolean;
-  timeoutMs: number;
-  includeFileContents: boolean;
-  contextFiles: string[];
-  maxFileSize: number;
+  stateStore: StoreType;
+  stateGistId: string;
+  incrementalReview: boolean;
 }
 
 const DEFAULT_MODELS: Record<string, string> = {
@@ -55,6 +50,12 @@ export function tokensToChars(tokens: number): number {
  * 75 000 tokens ≈ 300 000 chars, matching model context windows for claude-sonnet-4.
  */
 export const MAX_PROMPT_TOKENS = 75_000;
+
+/** Timeout per LLM API call in milliseconds. */
+export const TIMEOUT_MS = 120_000;
+
+/** Maximum characters per file when including file contents. */
+export const MAX_FILE_SIZE = 10_000;
 
 /** Shared severity scale — identical wording used in both specialist and judge prompts. */
 export const SEVERITY_RUBRIC = `Severity scale (identical for all agents):
@@ -155,24 +156,18 @@ const ENV_VAR_NAMES: Record<string, string> = {
   provider: 'REVIEW_PROVIDER',
   model: 'REVIEW_MODEL',
   review_categories: 'REVIEW_CATEGORIES',
-  custom_prompt: 'CUSTOM_PROMPT',
-  extra_instructions: 'EXTRA_INSTRUCTIONS',
+  repo_context: 'REPO_CONTEXT',
+  review_policy: 'REVIEW_POLICY',
   security: 'SECURITY_GUIDELINES',
   tests: 'TEST_GUIDELINES',
   performance: 'PERFORMANCE_GUIDELINES',
   code: 'CODE_GUIDELINES',
-  max_diff_size: 'MAX_DIFF_SIZE',
-  post_review_comment: 'POST_REVIEW_COMMENT',
-  post_inline_comments: 'POST_INLINE_COMMENTS',
-  fail_on_critical: 'FAIL_ON_CRITICAL',
   ignore_paths: 'IGNORE_PATHS',
-  redact_secrets: 'REDACT_SECRETS',
-  timeout: 'REVIEW_TIMEOUT',
-  include_file_contents: 'INCLUDE_FILE_CONTENTS',
-  context_files: 'CONTEXT_FILES',
-  max_file_size: 'MAX_FILE_SIZE',
   github_token: 'GITHUB_TOKEN',
   azure_endpoint: 'AZURE_ENDPOINT',
+  state_store: 'STATE_STORE',
+  state_gist_id: 'STATE_GIST_ID',
+  incremental_review: 'INCREMENTAL_REVIEW',
 };
 
 function resolve(inputName: string, fallback = ''): string {
@@ -235,8 +230,6 @@ export function loadConfig(): ReviewConfig {
     );
   }
 
-  const timeoutSec = parseInt(resolve('timeout', '120'), 10);
-
   return {
     provider,
     apiKey,
@@ -250,24 +243,15 @@ export function loadConfig(): ReviewConfig {
       code: resolveGuidelines('code'),
       custom: {
         enabled: enabledCategories.includes('custom'),
-        guidelines: resolve('custom_prompt'),
+        guidelines: resolve('repo_context'),
       },
     },
-    customPrompt: resolve('custom_prompt'),
-    extraInstructions: resolve('extra_instructions'),
-    maxDiffSize: parseInt(resolve('max_diff_size', '60000'), 10),
-    postReviewComment: bool(resolve('post_review_comment'), true),
-    postInlineComments: bool(resolve('post_inline_comments'), true),
-    failOnCritical: bool(resolve('fail_on_critical'), false),
+    repoContext: resolve('repo_context'),
+    reviewPolicy: resolve('review_policy'),
     ignorePatterns: parseIgnorePatterns(resolve('ignore_paths')),
-    redactSecrets: bool(resolve('redact_secrets'), true),
-    timeoutMs: timeoutSec * 1000,
-    includeFileContents: bool(resolve('include_file_contents'), true),
-    contextFiles: resolve('context_files')
-      .split(',')
-      .map((f) => f.trim())
-      .filter(Boolean),
-    maxFileSize: parseInt(resolve('max_file_size', '10000'), 10),
+    stateStore: (resolve('state_store', 'comment-marker') as StoreType),
+    stateGistId: resolve('state_gist_id'),
+    incrementalReview: bool(resolve('incremental_review'), true),
   };
 }
 

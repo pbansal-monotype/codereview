@@ -53,9 +53,12 @@ jobs:
         with:
           provider: anthropic
           review_categories: 'security,tests,performance,code'
-          fail_on_critical: 'true'
-          custom_prompt: |
-            This is a Node.js microservice using Express and PostgreSQL.
+          repo_context: |
+            Node.js microservice using Express and PostgreSQL.
+            Auth middleware at src/middleware/auth.ts.
+          review_policy: |
+            All new routes must use the auth middleware.
+            Error responses must use our AppError class.
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -122,22 +125,18 @@ The system has multiple layers to prevent low-quality findings:
 | `test_guidelines` | No | built-in | Custom test coverage review rules |
 | `performance_guidelines` | No | built-in | Custom performance review rules |
 | `code_guidelines` | No | built-in | Custom code quality review rules |
-| `custom_prompt` | No | — | Repo-specific context (tech stack, architecture) |
-| `extra_instructions` | No | — | Company-wide policies appended to all agent prompts |
-| `max_diff_size` | No | `60000` | Max diff characters before truncation |
-| `post_review_comment` | No | `true` | Post summary comment on PR |
-| `post_inline_comments` | No | `true` | Post inline comments on diff lines |
-| `fail_on_critical` | No | `false` | Fail CI on critical findings |
+| `repo_context` | No | — | Repository overview (tech stack, architecture, key files) |
+| `review_policy` | No | — | Review policy and standards injected into all agent prompts |
 | `ignore_paths` | No | — | Glob patterns to skip (e.g. `**/migrations/**`) |
-| `redact_secrets` | No | `true` | Redact secrets before sending to AI |
-| `timeout` | No | `120` | Timeout in seconds per API call |
-| `include_file_contents` | No | `true` | Send full file contents alongside diff |
-| `context_files` | No | — | Extra files to always include for context |
-| `max_file_size` | No | `10000` | Max characters per file |
 
-> `custom_prompt` = **repo-specific context** ("This is a Django app with Celery workers.")
+> `repo_context` = **what the repo is** ("Django app with Celery workers. Prisma ORM. Auth in src/middleware/auth.ts.")
 >
-> `extra_instructions` = **company-wide policy** ("All APIs must validate auth tokens. Follow standards at wiki.internal/standards.")
+> `review_policy` = **how to review it** ("All APIs must validate auth tokens. Follow standards at wiki.internal/standards.")
+
+The following behaviors are always enabled and cannot be toggled off:
+- **Review comments** — Summary and inline comments are always posted to the PR
+- **Secret redaction** — Secrets are always redacted before sending code to the AI
+- **Full file contents** — Changed files are always sent alongside the diff for full context
 
 ## Customising guidelines
 
@@ -168,7 +167,7 @@ env:
   AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
   AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
   SECURITY_GUIDELINES: ${{ vars.SECURITY_GUIDELINES }}
-  EXTRA_INSTRUCTIONS: ${{ vars.EXTRA_INSTRUCTIONS }}
+  REVIEW_POLICY: ${{ vars.REVIEW_POLICY }}
 ```
 
 <details>
@@ -186,18 +185,9 @@ env:
 | `test_guidelines` | `TEST_GUIDELINES` |
 | `performance_guidelines` | `PERFORMANCE_GUIDELINES` |
 | `code_guidelines` | `CODE_GUIDELINES` |
-| `custom_prompt` | `CUSTOM_PROMPT` |
-| `extra_instructions` | `EXTRA_INSTRUCTIONS` |
-| `max_diff_size` | `MAX_DIFF_SIZE` |
-| `post_review_comment` | `POST_REVIEW_COMMENT` |
-| `post_inline_comments` | `POST_INLINE_COMMENTS` |
-| `fail_on_critical` | `FAIL_ON_CRITICAL` |
+| `repo_context` | `REPO_CONTEXT` |
+| `review_policy` | `REVIEW_POLICY` |
 | `ignore_paths` | `IGNORE_PATHS` |
-| `redact_secrets` | `REDACT_SECRETS` |
-| `timeout` | `REVIEW_TIMEOUT` |
-| `include_file_contents` | `INCLUDE_FILE_CONTENTS` |
-| `context_files` | `CONTEXT_FILES` |
-| `max_file_size` | `MAX_FILE_SIZE` |
 
 </details>
 
@@ -230,11 +220,6 @@ src/
 │   ├── anthropic.ts         # Supports cache_control blocks for prompt caching
 │   ├── openai.ts
 │   └── azure.ts             # Azure OpenAI via AzureOpenAI client
-├── eval/                    # Evaluation harness (precision/recall, topology comparison)
-│   ├── inject-defects.ts
-│   ├── run-topologies.ts
-│   ├── score.ts
-│   └── fixtures/
 ├── config.ts                # Config loading, JSON instructions, severity rubric
 ├── findings.ts              # Finding parsing, validation & quality filtering
 ├── github.ts                # PR data fetching & comment posting

@@ -57,65 +57,35 @@ inputs:
     required: false
     default: ''
 
-  custom_prompt:
-    description: 'Repo-specific context sent with the review (tech stack, architecture, conventions)'
+  repo_context:
+    description: 'Repository overview — tech stack, architecture, key files, conventions. Sent alongside PR data so agents understand the codebase.'
     required: false
     default: ''
 
-  extra_instructions:
-    description: 'Company-wide policies appended to the system prompt (tone, standards, compliance rules)'
+  review_policy:
+    description: 'Review policy and standards — coding rules, compliance requirements, team conventions. Injected into every agent system prompt.'
     required: false
     default: ''
-
-  max_diff_size:
-    description: 'Maximum diff size in characters before smart truncation (default 300000). The risk scorer handles fine-grained budget allocation, so this is a hard safety cap only.'
-    required: false
-    default: '300000'
-
-  post_review_comment:
-    description: 'Post the review summary as a PR comment (true/false)'
-    required: false
-    default: 'true'
-
-  post_inline_comments:
-    description: 'Post inline review comments on specific diff lines (true/false)'
-    required: false
-    default: 'true'
-
-  fail_on_critical:
-    description: 'Fail the action if critical issues are found (true/false)'
-    required: false
-    default: 'false'
 
   ignore_paths:
     description: 'Comma-separated glob patterns for files to skip (e.g. "**/migrations/**,**/*.generated.ts")'
     required: false
     default: ''
 
-  redact_secrets:
-    description: 'Redact potential secrets from diff before sending to AI (true/false)'
+  incremental_review:
+    description: 'Enable incremental reviews — only review new changes since the last reviewed commit (true/false). Requires a state store to persist the last reviewed SHA.'
     required: false
     default: 'true'
 
-  timeout:
-    description: 'Timeout in seconds for each AI API call (default 120)'
+  state_store:
+    description: 'Where to persist review state for incremental reviews. "comment-marker" embeds state in the PR review comment (zero config). "gist" stores state in a GitHub Gist (requires state_gist_id). "none" disables state persistence.'
     required: false
-    default: '120'
+    default: 'comment-marker'
 
-  include_file_contents:
-    description: 'Send full contents of changed files alongside the diff for better context (true/false)'
-    required: false
-    default: 'true'
-
-  context_files:
-    description: 'Comma-separated file paths to always include for context (e.g. "src/types.ts,src/db/schema.prisma")'
+  state_gist_id:
+    description: 'GitHub Gist ID for state persistence when state_store is "gist". Create a gist with any content and paste its ID here.'
     required: false
     default: ''
-
-  max_file_size:
-    description: 'Maximum characters per file when including file contents (default 10000)'
-    required: false
-    default: '10000'
 
 outputs:
   review_body:
