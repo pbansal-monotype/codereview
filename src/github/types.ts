@@ -11,19 +11,20 @@ export interface PullRequestData {
   diff: string;
   baseBranch: string;
   headBranch: string;
+  headSha: string;
   author: string;
   changedFiles: string[];
   reviewedFiles: string[];
   ignoredFiles: string[];
   redactionCount: number;
   fileContents: FileContent[];
+  isIncremental: boolean;
+  incrementalBaseSha?: string;
 }
 
 export interface FetchPROptions {
   maxDiffSize: number;
   ignorePatterns: string[];
-  redactSecrets: boolean;
-  contextFiles: string[];
-  includeFileContents: boolean;
   maxFileSize: number;
+  lastReviewedSha?: string;
 }

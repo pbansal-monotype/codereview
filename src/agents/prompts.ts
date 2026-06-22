@@ -61,8 +61,11 @@ export function buildPrMetadata(
     prompt += `\n### PR Description\n<pr_description>\n${pr.body}\n</pr_description>\n`;
   }
 
+  if (config.repoContext) {
+    prompt += `\n### Repository Overview\n${config.repoContext}\n`;
+  }
+
   if (config.customPrompt) {
-    // customPrompt is repo context set by the repo owner — trusted, no delimiter needed.
     prompt += `\n### Additional Context (repo-owner supplied)\n${config.customPrompt}\n`;
   }
 
