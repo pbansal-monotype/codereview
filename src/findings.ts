@@ -17,6 +17,8 @@ export interface StructuredReview {
   findings: Finding[];
   /** True when the judge output was degraded (e.g. parse failure fallback) and findings have not been verified. */
   unverified?: boolean;
+  /** Which judge stage failed when unverified is true. */
+  unverifiedStage?: 'dedup' | 'rewrite';
 }
 
 const VALID_SEVERITIES = new Set<string>(['critical', 'warning', 'suggestion']);
@@ -75,8 +77,7 @@ export function parseStructuredReview(
     filterLowConfidence = true,
   } = options;
 
-  const json = extractJson(raw);
-  const parsed = JSON.parse(json) as Partial<StructuredReview>;
+  const parsed = parseJsonPayload(raw) as Partial<StructuredReview>;
 
   const summary = typeof parsed.summary === 'string' ? parsed.summary : '';
   const findings: Finding[] = [];
@@ -235,8 +236,7 @@ export function sortFindingsForReview(findings: Finding[]): Finding[] {
  * Accepts { "findings": [...] } (required by OpenAI/Azure json_object mode) or a bare array.
  */
 export function parseDedupedFindings(raw: string): Finding[] {
-  const json = extractJson(raw);
-  const parsed = JSON.parse(json) as unknown;
+  const parsed = parseJsonPayload(raw);
   const items = coerceFindingsArray(parsed);
 
   const findings: Finding[] = [];
@@ -278,6 +278,156 @@ function coerceFindingsArray(parsed: unknown): unknown[] {
     return (parsed as { findings: unknown[] }).findings;
   }
   throw new Error('Dedup agent output must be a JSON array or { "findings": [...] } object');
+}
+
+const SEVERITY_RANK: Record<Severity, number> = {
+  critical: 0,
+  warning: 1,
+  suggestion: 2,
+};
+
+/** Merge findings by category + file + line, keeping the highest-severity entry. */
+export function mechanicalDedup(findings: Finding[]): Finding[] {
+  const seen = new Map<string, Finding>();
+  for (const f of findings) {
+    const key = `${f.category}\0${f.file ?? ''}\0${String(f.line ?? '')}`;
+    const existing = seen.get(key);
+    if (
+      !existing ||
+      SEVERITY_RANK[f.severity] < SEVERITY_RANK[existing.severity]
+    ) {
+      seen.set(key, f);
+    }
+  }
+  return sortFindingsForReview([...seen.values()]);
+}
+
+/** Build a degraded review when a judge stage fails to parse after retry. */
+export function buildUnverifiedFallback(
+  findings: Finding[],
+  stage: 'dedup' | 'rewrite',
+  reason: string,
+): StructuredReview {
+  const capped =
+    stage === 'dedup'
+      ? mechanicalDedup(findings).slice(0, MAX_FINDINGS)
+      : sortFindingsForReview(findings).slice(0, MAX_FINDINGS);
+
+  const summary =
+    stage === 'dedup'
+      ? `Review completed with degraded judge output (dedup failed: ${reason}). Findings below are from specialist agents and may include duplicates.`
+      : `Review completed with degraded judge output (rewrite failed: ${reason}). Findings were deduplicated but messages were not rewritten.`;
+
+  return {
+    summary,
+    findings: capped,
+    unverified: true,
+    unverifiedStage: stage,
+  };
+}
+
+function extractCompleteJsonObjects(text: string): string[] {
+  const objects: string[] = [];
+  let i = 0;
+
+  while (i < text.length) {
+    if (text[i] !== '{') {
+      i++;
+      continue;
+    }
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    const start = i;
+
+    for (; i < text.length; i++) {
+      const ch = text[i];
+      if (inString) {
+        if (escape) escape = false;
+        else if (ch === '\\') escape = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          objects.push(text.slice(start, i + 1));
+          i++;
+          break;
+        }
+      }
+    }
+
+    if (depth !== 0) break;
+  }
+
+  return objects;
+}
+
+/**
+ * Salvage complete finding objects from truncated judge JSON
+ * (e.g. output cut off mid-array or mid-object).
+ */
+export function salvageTruncatedFindingsJson(raw: string): string | null {
+  const trimmed = raw.trim();
+  const findingsKeyMatch = trimmed.match(/"findings"\s*:\s*\[/);
+
+  let arraySlice: string;
+  let wrapInObject: boolean;
+
+  if (findingsKeyMatch && findingsKeyMatch.index !== undefined) {
+    const arrayStart = trimmed.indexOf('[', findingsKeyMatch.index);
+    if (arrayStart === -1) return null;
+    arraySlice = trimmed.slice(arrayStart);
+    wrapInObject = true;
+  } else {
+    const arrayStart = trimmed.indexOf('[');
+    if (arrayStart === -1) return null;
+    arraySlice = trimmed.slice(arrayStart);
+    wrapInObject = false;
+  }
+
+  const objects = extractCompleteJsonObjects(arraySlice);
+  if (objects.length === 0) return null;
+
+  const arrayJson = `[${objects.join(',')}]`;
+  try {
+    JSON.parse(arrayJson);
+  } catch {
+    return null;
+  }
+
+  return wrapInObject ? `{"findings":${arrayJson}}` : arrayJson;
+}
+
+function parseJsonPayload(raw: string): unknown {
+  const candidates: string[] = [];
+  const extracted = extractJson(raw);
+  candidates.push(extracted);
+
+  for (const salvageSource of [raw, extracted]) {
+    const salvaged = salvageTruncatedFindingsJson(salvageSource);
+    if (salvaged) candidates.push(salvaged);
+  }
+
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+  }
+
+  throw new SyntaxError('No parseable JSON found');
 }
 
 export function extractJson(text: string): string {

@@ -124,50 +124,17 @@ export async function runReview(
   }
 
   // Stage 2: Judge — deduplicate then rewrite (two agent calls).
-  // Fail-closed: if either judge agent crashes (including unrecoverable parse failures)
-  // we block the PR rather than silently shipping unverified findings.
-  let judgeTokens = { input: 0, output: 0 };
-  let structured;
-
-  try {
-    const judgeResult = await runJudge(
-      provider,
-      specialistResults,
-      pr,
-      config,
-      sharedContext,
-      categoryIds,
-    );
-    structured = judgeResult.structured;
-    judgeTokens = judgeResult.tokens;
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    core.error(`[judge] Judge failed: ${message} — failing closed (blocking PR)`);
-
-    const totalInput = specialistResults.reduce((s, r) => s + r.tokens.input, 0);
-    const totalOutput = specialistResults.reduce((s, r) => s + r.tokens.output, 0);
-
-    const markdown = formatReviewMarkdown({
-      structured: undefined,
-      pr,
-      config,
-      categories: categoryIds,
-      totalTokens: { input: totalInput, output: totalOutput },
-      apiCalls: activeCategories.length + 2,
-      specialistResults,
-      failClosed: true,
-      failReason: message,
-    });
-
-    return {
-      markdown,
-      hasCritical: true,
-      categories: categoryIds,
-      tokensUsed: totalInput + totalOutput,
-      inputTokens: totalInput,
-      outputTokens: totalOutput,
-    };
-  }
+  // Parse failures fall back to unverified specialist/deduped findings inside runJudge.
+  const judgeResult = await runJudge(
+    provider,
+    specialistResults,
+    pr,
+    config,
+    sharedContext,
+    categoryIds,
+  );
+  const structured = judgeResult.structured;
+  const judgeTokens = judgeResult.tokens;
 
   core.info(`[judge] Final approved findings: ${structured.findings.length}`);
   for (const f of structured.findings) {
@@ -194,7 +161,6 @@ export async function runReview(
     totalTokens: { input: totalInput, output: totalOutput },
     apiCalls,
     specialistResults,
-    failClosed: false,
   });
 
   return {

@@ -13,13 +13,28 @@ interface FormatOptions {
   totalTokens: TokenUsage;
   apiCalls: number;
   specialistResults: SpecialistResult[];
-  failClosed?: boolean;
-  failReason?: string;
+}
+
+function unverifiedBanner(structured: StructuredReview): string {
+  if (!structured.unverified) return '';
+
+  if (structured.unverifiedStage === 'rewrite') {
+    return (
+      `\n> ⚠️ **Judge output is unverified** — the rewrite stage failed to parse. ` +
+      `Findings below were deduplicated but messages were not rewritten. ` +
+      `Review manually before acting on these.\n`
+    );
+  }
+
+  return (
+    `\n> ⚠️ **Judge output is unverified** — the dedup stage failed to parse. ` +
+    `Findings below are raw specialist output and may include duplicates. ` +
+    `Review manually before acting on these.\n`
+  );
 }
 
 export function formatReviewMarkdown(opts: FormatOptions): string {
-  const { structured, pr, config, categories, totalTokens, apiCalls, failClosed, failReason } =
-    opts;
+  const { structured, pr, config, categories, totalTokens, apiCalls } = opts;
 
   let md = `# 🤖 AI PR Review\n\n`;
   md += `**PR:** #${pr.number} — ${pr.title}\n`;
@@ -27,25 +42,12 @@ export function formatReviewMarkdown(opts: FormatOptions): string {
   md += `**Mode:** Multi-agent (${apiCalls - 2} specialists + dedup + rewrite judges)\n`;
   md += `**Files reviewed:** ${pr.reviewedFiles.length} / ${pr.changedFiles.length} changed\n`;
 
-  if (failClosed) {
-    md += `\n> **Merge blocked — judge agent failed and the pipeline is fail-closed.**\n`;
-    if (failReason) {
-      md += `> Error: \`${failReason}\`\n`;
-    }
-    md += `> Please review this PR manually or re-run the workflow.\n`;
-    md += `\n---\n`;
-    return md;
-  }
-
   if (pr.redactionCount > 0) {
     md += `**Secrets redacted:** ${pr.redactionCount} value(s) removed before AI review\n`;
   }
 
-  // Surface any unverified-output warning at the top before findings.
-  if (structured?.unverified) {
-    md += `\n> ⚠️ **Judge output is unverified** — the quality-gate agent returned degraded output. `;
-    md += `Findings below are raw specialist output and have NOT been deduplicated or recalibrated. `;
-    md += `Review manually before acting on these.\n`;
+  if (structured) {
+    md += unverifiedBanner(structured);
   }
 
   // Surface failed specialists prominently — a crashed agent must never look like a clean pass.
@@ -64,7 +66,7 @@ export function formatReviewMarkdown(opts: FormatOptions): string {
       (f) => f.severity === 'critical',
     ).length;
     if (criticalCount > 0) {
-      md += `\n> 🚨 **${criticalCount} critical issue(s) found — merge blocked**\n`;
+      md += `\n> 🚨 **${criticalCount} critical issue(s) found**\n`;
     } else if (structured.findings.length > 0) {
       md += `\n> ✅ **No critical issues — ${structured.findings.length} suggestion(s)/warning(s)**\n`;
     } else if (failedSpecialists.length > 0) {

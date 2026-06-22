@@ -4,6 +4,7 @@ import {
   parseJudgeRewriteReview,
   parseDedupedFindings,
   reconcileRewrittenFindings,
+  buildUnverifiedFallback,
   StructuredReview,
 } from '../findings';
 import { AIProvider } from '../providers';
@@ -19,16 +20,26 @@ import {
 
 interface JudgeResult {
   structured: StructuredReview;
-
   tokens: TokenUsage;
 }
 
-interface AgentCallResult<T> {
+interface AgentCallSuccess<T> {
+  ok: true;
   value: T;
   tokensUsed: number;
   inputTokens: number;
   outputTokens: number;
 }
+
+interface AgentCallParseFailure {
+  ok: false;
+  reason: string;
+  tokensUsed: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+type AgentCallOutcome<T> = AgentCallSuccess<T> | AgentCallParseFailure;
 
 async function callWithParseRetry<T>(
   label: string,
@@ -37,44 +48,59 @@ async function callWithParseRetry<T>(
   userPrompt: string,
   timeoutMs: number,
   parse: (raw: string) => T,
-): Promise<AgentCallResult<T>> {
+): Promise<AgentCallOutcome<T>> {
   const response = await provider.review({ systemPrompt, userPrompt, timeoutMs });
 
   core.debug(`[${label}] SYSTEM PROMPT (${systemPrompt.length} chars):\n${systemPrompt}`);
   core.debug(`[${label}] USER PROMPT (${userPrompt.length} chars):\n${userPrompt}`);
 
-  try {
-    const value = parse(response.review);
-    core.debug(`[${label}] RAW RESPONSE:\n${response.review}`);
+  const attemptParse = (raw: string, attempt: 'first' | 'retry'): T | null => {
+    try {
+      const value = parse(raw);
+      core.debug(`[${label}] RAW RESPONSE (${attempt}):\n${raw}`);
+      return value;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      core.debug(`[${label}] Parse failed (${attempt}): ${msg}`);
+      core.debug(`[${label}] RAW RESPONSE (unparseable, ${attempt}):\n${raw}`);
+      return null;
+    }
+  };
+
+  const first = attemptParse(response.review, 'first');
+  if (first !== null) {
     return {
-      value,
+      ok: true,
+      value: first,
       tokensUsed: response.tokensUsed,
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
     };
-  } catch (err) {
-    core.warning(`[${label}] Failed to parse output on first attempt — retrying once...`);
-    core.debug(`[${label}] RAW RESPONSE (unparseable):\n${response.review}`);
-
-    const retry = await provider.review({ systemPrompt, userPrompt, timeoutMs });
-    try {
-      const value = parse(retry.review);
-      core.debug(`[${label}] RAW RESPONSE (retry):\n${retry.review}`);
-      return {
-        value,
-        tokensUsed: response.tokensUsed + retry.tokensUsed,
-        inputTokens: response.inputTokens + retry.inputTokens,
-        outputTokens: response.outputTokens + retry.outputTokens,
-      };
-    } catch (retryErr) {
-      const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-      const original = err instanceof Error ? err.message : String(err);
-      core.error(
-        `[${label}] Output unparseable after retry (original: ${original}; retry: ${msg}) — failing closed`,
-      );
-      throw retryErr;
-    }
   }
+
+  core.warning(`[${label}] Failed to parse output on first attempt — retrying once...`);
+
+  const retry = await provider.review({ systemPrompt, userPrompt, timeoutMs });
+  const second = attemptParse(retry.review, 'retry');
+  if (second !== null) {
+    return {
+      ok: true,
+      value: second,
+      tokensUsed: response.tokensUsed + retry.tokensUsed,
+      inputTokens: response.inputTokens + retry.inputTokens,
+      outputTokens: response.outputTokens + retry.outputTokens,
+    };
+  }
+
+  const reason = 'Output unparseable after retry';
+  core.warning(`[${label}] ${reason} — will use degraded fallback`);
+  return {
+    ok: false,
+    reason,
+    tokensUsed: response.tokensUsed + retry.tokensUsed,
+    inputTokens: response.inputTokens + retry.inputTokens,
+    outputTokens: response.outputTokens + retry.outputTokens,
+  };
 }
 
 export async function runJudge(
@@ -89,7 +115,7 @@ export async function runJudge(
 
   core.info(`[judge/dedup] Deduplicating ${allFindings.length} raw finding(s)...`);
 
-  const dedupResult = await callWithParseRetry(
+  const dedupOutcome = await callWithParseRetry(
     'judge/dedup',
     provider,
     buildJudgeDedupSystemPrompt(config),
@@ -98,44 +124,70 @@ export async function runJudge(
     parseDedupedFindings,
   );
 
+  let dedupFindings;
+  let inputTokens = dedupOutcome.inputTokens;
+  let outputTokens = dedupOutcome.outputTokens;
+  let structured: StructuredReview;
+
+  if (!dedupOutcome.ok) {
+    core.warning(
+      `[judge/dedup] Parse failure — publishing unverified specialist findings (${dedupOutcome.reason})`,
+    );
+    structured = buildUnverifiedFallback(allFindings, 'dedup', dedupOutcome.reason);
+    return {
+      structured,
+      tokens: { input: inputTokens, output: outputTokens },
+    };
+  }
+
+  dedupFindings = dedupOutcome.value;
   core.info(
-    `[judge/dedup] ${dedupResult.value.length} finding(s) after dedup (${dedupResult.tokensUsed} tokens)`,
+    `[judge/dedup] ${dedupFindings.length} finding(s) after dedup (${dedupOutcome.tokensUsed} tokens)`,
   );
 
   core.info('[judge/rewrite] Rewriting finding messages and writing summary...');
 
-  const rewriteResult = await callWithParseRetry(
+  const rewriteOutcome = await callWithParseRetry(
     'judge/rewrite',
     provider,
     buildJudgeRewriteSystemPrompt(config),
-    buildJudgeRewriteUserPrompt(dedupResult.value, pr),
+    buildJudgeRewriteUserPrompt(dedupFindings, pr),
     TIMEOUT_MS,
     parseJudgeRewriteReview,
   );
 
-  const parsedRewrite = rewriteResult.value;
+  inputTokens += rewriteOutcome.inputTokens;
+  outputTokens += rewriteOutcome.outputTokens;
 
-  if (parsedRewrite.findings.length < dedupResult.value.length) {
+  if (!rewriteOutcome.ok) {
     core.warning(
-      `[judge/rewrite] Rewrite returned ${parsedRewrite.findings.length}/${dedupResult.value.length} finding(s) — restoring missing findings with original messages`,
+      `[judge/rewrite] Parse failure — publishing deduped findings without rewrite (${rewriteOutcome.reason})`,
+    );
+    structured = buildUnverifiedFallback(dedupFindings, 'rewrite', rewriteOutcome.reason);
+    return {
+      structured,
+      tokens: { input: inputTokens, output: outputTokens },
+    };
+  }
+
+  const parsedRewrite = rewriteOutcome.value;
+
+  if (parsedRewrite.findings.length < dedupFindings.length) {
+    core.warning(
+      `[judge/rewrite] Rewrite returned ${parsedRewrite.findings.length}/${dedupFindings.length} finding(s) — restoring missing findings with original messages`,
     );
   }
 
-  const structured = reconcileRewrittenFindings(dedupResult.value, parsedRewrite);
+  structured = reconcileRewrittenFindings(dedupFindings, parsedRewrite);
 
-  if (structured.findings.length !== dedupResult.value.length) {
+  if (structured.findings.length !== dedupFindings.length) {
     core.error(
-      `[judge/rewrite] Finding count mismatch after reconcile: ${structured.findings.length} vs ${dedupResult.value.length}`,
+      `[judge/rewrite] Finding count mismatch after reconcile: ${structured.findings.length} vs ${dedupFindings.length}`,
     );
   }
-
-  const totalTokens =
-    dedupResult.tokensUsed + rewriteResult.tokensUsed;
-  const inputTokens = dedupResult.inputTokens + rewriteResult.inputTokens;
-  const outputTokens = dedupResult.outputTokens + rewriteResult.outputTokens;
 
   core.info(
-    `[judge/rewrite] Final output: ${structured.findings.length} finding(s) (${rewriteResult.tokensUsed} tokens; ${totalTokens} total judge tokens)`,
+    `[judge/rewrite] Final output: ${structured.findings.length} finding(s) (${rewriteOutcome.tokensUsed} tokens; ${inputTokens + outputTokens} total judge tokens)`,
   );
 
   return {

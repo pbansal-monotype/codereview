@@ -299,7 +299,7 @@ Specialist raw JSON
 3. **Budget-aware context** — Risk scoring prevents blowing token limits on large PRs
 4. **Quality gates at multiple layers** — Injection guards, specialist filters, judge dedup/rewrite, vague-message regex filters, 8-finding cap
 5. **Resilient fan-out** — `Promise.allSettled` so one crashed specialist doesn't kill the pipeline; failures surfaced in PR comment
-6. **Fail-closed judge** — Unverified findings are never silently published if the judge fails
+6. **Degraded judge fallback** — If judge JSON parsing fails after retry, specialist or deduped findings are published with an unverified banner; API/infrastructure failures still fail the action
 7. **Single-file distribution** — `ncc` bundle makes the action self-contained with no runtime `npm install`
 8. **Incremental review via persisted state** — `last_reviewed_sha` is stored per PR (via comment marker or GitHub Gist) to diff only new changes on `synchronize` events, preventing the infinite-findings loop
 

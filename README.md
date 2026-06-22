@@ -109,7 +109,7 @@ The system has multiple layers to prevent low-quality findings:
 3. **Judge-level**: Verifies each finding's code snippet against the actual diff, deduplicates, re-calibrates severity, removes confidence "low" findings, and caps the total at 8.
 4. **Code-level filters**: Drops vague messages ("Ensure...", "Consider...") and findings without a file path.
 5. **Severity calibration (shared scale)**: "critical" = would you page the on-call at 3 am? "warning" = real bug, not urgent. "suggestion" = concrete improvement with specific code. The exact same scale is used by every specialist and the judge.
-6. **Honest failure reporting**: A crashed specialist appears as a visible warning in the PR comment — it can never silently read as a clean pass. A judge failure is fail-closed (blocks merge) rather than publishing unverified findings.
+6. **Honest failure reporting**: A crashed specialist appears as a visible warning in the PR comment — it can never silently read as a clean pass. If the judge fails to parse its JSON output after retry, findings are published with an **unverified** banner (specialist or deduped fallback) rather than blocking the review.
 
 ## Inputs
 
@@ -212,7 +212,7 @@ src/
 │   │   └── code-guidelines.ts
 │   ├── prompts.ts           # All prompt builders (specialist + judge, with injection guards)
 │   ├── specialist.ts        # Specialist agent runner
-│   ├── judge.ts             # Judge agent runner (fail-closed, retry-on-parse-failure)
+│   ├── judge.ts             # Judge agent runner (parse repair + unverified fallback)
 │   ├── format.ts            # Markdown formatting for PR comments
 │   ├── orchestrator.ts      # Parallel fan-out → judge → result
 │   └── types.ts             # Shared types

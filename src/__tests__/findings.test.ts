@@ -9,6 +9,9 @@ import {
   sortFindingsForReview,
   parseJudgeRewriteReview,
   reconcileRewrittenFindings,
+  salvageTruncatedFindingsJson,
+  mechanicalDedup,
+  buildUnverifiedFallback,
 } from '../findings';
 
 describe('parseStructuredReview', () => {
@@ -395,5 +398,70 @@ describe('parseSpecialistFindings', () => {
     assert.equal(findings.length, 1);
     assert.equal(findings[0].category, 'security');
     assert.equal(findings[0].severity, 'critical');
+  });
+});
+
+describe('salvageTruncatedFindingsJson', () => {
+  it('salvages complete objects from truncated findings array', () => {
+    const complete = {
+      category: 'security',
+      severity: 'critical',
+      confidence: 'high',
+      file: 'src/a.ts',
+      line: 1,
+      message: 'Issue A',
+    };
+    const truncated = `Here is the review:\n{"findings":[${JSON.stringify(complete)},{"category":"code","severity":"warning","file":"src/b.ts","line":2,"mess`;
+    const salvaged = salvageTruncatedFindingsJson(truncated);
+    assert.ok(salvaged);
+    const findings = parseDedupedFindings(salvaged!);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].file, 'src/a.ts');
+  });
+
+  it('parses prose-wrapped JSON via salvage path', () => {
+    const raw =
+      'Sure! Here is the JSON:\n```json\n{"summary":"ok","findings":[{"category":"security","severity":"warning","confidence":"high","file":"src/x.ts","line":3,"message":"msg"}]}\n```\nHope that helps!';
+    const review = parseJudgeRewriteReview(raw);
+    assert.equal(review.findings.length, 1);
+    assert.equal(review.summary, 'ok');
+  });
+});
+
+describe('mechanicalDedup', () => {
+  it('keeps highest severity for same category+file+line', () => {
+    const deduped = mechanicalDedup([
+      { category: 'security', severity: 'warning', confidence: 'high', file: 'src/a.ts', line: 10, message: 'warn' },
+      { category: 'security', severity: 'critical', confidence: 'high', file: 'src/a.ts', line: 10, message: 'crit' },
+    ]);
+    assert.equal(deduped.length, 1);
+    assert.equal(deduped[0].severity, 'critical');
+  });
+});
+
+describe('buildUnverifiedFallback', () => {
+  it('marks dedup fallback as unverified with stage dedup', () => {
+    const review = buildUnverifiedFallback(
+      [
+        { category: 'code', severity: 'warning', confidence: 'high', file: 'src/a.ts', line: 1, message: 'a' },
+      ],
+      'dedup',
+      'parse error',
+    );
+    assert.equal(review.unverified, true);
+    assert.equal(review.unverifiedStage, 'dedup');
+    assert.match(review.summary, /dedup failed/i);
+  });
+
+  it('marks rewrite fallback as unverified with stage rewrite', () => {
+    const review = buildUnverifiedFallback(
+      [
+        { category: 'code', severity: 'warning', confidence: 'high', file: 'src/a.ts', line: 1, message: 'a' },
+      ],
+      'rewrite',
+      'parse error',
+    );
+    assert.equal(review.unverifiedStage, 'rewrite');
+    assert.match(review.summary, /rewrite failed/i);
   });
 });
