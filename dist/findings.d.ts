@@ -15,6 +15,8 @@ export interface StructuredReview {
     findings: Finding[];
     /** True when the judge output was degraded (e.g. parse failure fallback) and findings have not been verified. */
     unverified?: boolean;
+    /** Which judge stage failed when unverified is true. */
+    unverifiedStage?: 'dedup' | 'rewrite';
 }
 export interface ParseStructuredReviewOptions {
     /** When true (default), return at most MAX_FINDINGS after sorting. */
@@ -44,5 +46,14 @@ export declare function sortFindingsForReview(findings: Finding[]): Finding[];
  * Accepts { "findings": [...] } (required by OpenAI/Azure json_object mode) or a bare array.
  */
 export declare function parseDedupedFindings(raw: string): Finding[];
+/** Merge findings by category + file + line, keeping the highest-severity entry. */
+export declare function mechanicalDedup(findings: Finding[]): Finding[];
+/** Build a degraded review when a judge stage fails to parse after retry. */
+export declare function buildUnverifiedFallback(findings: Finding[], stage: 'dedup' | 'rewrite', reason: string): StructuredReview;
+/**
+ * Salvage complete finding objects from truncated judge JSON
+ * (e.g. output cut off mid-array or mid-object).
+ */
+export declare function salvageTruncatedFindingsJson(raw: string): string | null;
 export declare function extractJson(text: string): string;
 export declare function formatFindingsMarkdown(structured: StructuredReview, categoryLabels: Record<string, string>): string;

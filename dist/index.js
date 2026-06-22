@@ -35648,30 +35648,30 @@ exports.formatReviewMarkdown = formatReviewMarkdown;
 const findings_1 = __nccwpck_require__(1001);
 const cost_1 = __nccwpck_require__(8666);
 const prompts_1 = __nccwpck_require__(2413);
+function unverifiedBanner(structured) {
+    if (!structured.unverified)
+        return '';
+    if (structured.unverifiedStage === 'rewrite') {
+        return (`\n> ⚠️ **Judge output is unverified** — the rewrite stage failed to parse. ` +
+            `Findings below were deduplicated but messages were not rewritten. ` +
+            `Review manually before acting on these.\n`);
+    }
+    return (`\n> ⚠️ **Judge output is unverified** — the dedup stage failed to parse. ` +
+        `Findings below are raw specialist output and may include duplicates. ` +
+        `Review manually before acting on these.\n`);
+}
 function formatReviewMarkdown(opts) {
-    const { structured, pr, config, categories, totalTokens, apiCalls, failClosed, failReason } = opts;
+    const { structured, pr, config, categories, totalTokens, apiCalls } = opts;
     let md = `# 🤖 AI PR Review\n\n`;
     md += `**PR:** #${pr.number} — ${pr.title}\n`;
     md += `**Provider:** ${config.provider} (${config.model})\n`;
     md += `**Mode:** Multi-agent (${apiCalls - 2} specialists + dedup + rewrite judges)\n`;
     md += `**Files reviewed:** ${pr.reviewedFiles.length} / ${pr.changedFiles.length} changed\n`;
-    if (failClosed) {
-        md += `\n> **Merge blocked — judge agent failed and the pipeline is fail-closed.**\n`;
-        if (failReason) {
-            md += `> Error: \`${failReason}\`\n`;
-        }
-        md += `> Please review this PR manually or re-run the workflow.\n`;
-        md += `\n---\n`;
-        return md;
-    }
     if (pr.redactionCount > 0) {
         md += `**Secrets redacted:** ${pr.redactionCount} value(s) removed before AI review\n`;
     }
-    // Surface any unverified-output warning at the top before findings.
-    if (structured?.unverified) {
-        md += `\n> ⚠️ **Judge output is unverified** — the quality-gate agent returned degraded output. `;
-        md += `Findings below are raw specialist output and have NOT been deduplicated or recalibrated. `;
-        md += `Review manually before acting on these.\n`;
+    if (structured) {
+        md += unverifiedBanner(structured);
     }
     // Surface failed specialists prominently — a crashed agent must never look like a clean pass.
     const failedSpecialists = opts.specialistResults.filter((r) => r.failed);
@@ -35686,7 +35686,7 @@ function formatReviewMarkdown(opts) {
     if (structured) {
         const criticalCount = structured.findings.filter((f) => f.severity === 'critical').length;
         if (criticalCount > 0) {
-            md += `\n> 🚨 **${criticalCount} critical issue(s) found — merge blocked**\n`;
+            md += `\n> 🚨 **${criticalCount} critical issue(s) found**\n`;
         }
         else if (structured.findings.length > 0) {
             md += `\n> ✅ **No critical issues — ${structured.findings.length} suggestion(s)/warning(s)**\n`;
@@ -36046,63 +36046,97 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runJudge = runJudge;
 const core = __importStar(__nccwpck_require__(7484));
+const config_1 = __nccwpck_require__(2973);
 const findings_1 = __nccwpck_require__(1001);
 const prompts_1 = __nccwpck_require__(2413);
 async function callWithParseRetry(label, provider, systemPrompt, userPrompt, timeoutMs, parse) {
     const response = await provider.review({ systemPrompt, userPrompt, timeoutMs });
     core.debug(`[${label}] SYSTEM PROMPT (${systemPrompt.length} chars):\n${systemPrompt}`);
     core.debug(`[${label}] USER PROMPT (${userPrompt.length} chars):\n${userPrompt}`);
-    try {
-        const value = parse(response.review);
-        core.debug(`[${label}] RAW RESPONSE:\n${response.review}`);
+    const attemptParse = (raw, attempt) => {
+        try {
+            const value = parse(raw);
+            core.debug(`[${label}] RAW RESPONSE (${attempt}):\n${raw}`);
+            return value;
+        }
+        catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            core.debug(`[${label}] Parse failed (${attempt}): ${msg}`);
+            core.debug(`[${label}] RAW RESPONSE (unparseable, ${attempt}):\n${raw}`);
+            return null;
+        }
+    };
+    const first = attemptParse(response.review, 'first');
+    if (first !== null) {
         return {
-            value,
+            ok: true,
+            value: first,
             tokensUsed: response.tokensUsed,
             inputTokens: response.inputTokens,
             outputTokens: response.outputTokens,
         };
     }
-    catch (err) {
-        core.warning(`[${label}] Failed to parse output on first attempt — retrying once...`);
-        core.debug(`[${label}] RAW RESPONSE (unparseable):\n${response.review}`);
-        const retry = await provider.review({ systemPrompt, userPrompt, timeoutMs });
-        try {
-            const value = parse(retry.review);
-            core.debug(`[${label}] RAW RESPONSE (retry):\n${retry.review}`);
-            return {
-                value,
-                tokensUsed: response.tokensUsed + retry.tokensUsed,
-                inputTokens: response.inputTokens + retry.inputTokens,
-                outputTokens: response.outputTokens + retry.outputTokens,
-            };
-        }
-        catch (retryErr) {
-            const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-            const original = err instanceof Error ? err.message : String(err);
-            core.error(`[${label}] Output unparseable after retry (original: ${original}; retry: ${msg}) — failing closed`);
-            throw retryErr;
-        }
+    core.warning(`[${label}] Failed to parse output on first attempt — retrying once...`);
+    const retry = await provider.review({ systemPrompt, userPrompt, timeoutMs });
+    const second = attemptParse(retry.review, 'retry');
+    if (second !== null) {
+        return {
+            ok: true,
+            value: second,
+            tokensUsed: response.tokensUsed + retry.tokensUsed,
+            inputTokens: response.inputTokens + retry.inputTokens,
+            outputTokens: response.outputTokens + retry.outputTokens,
+        };
     }
+    const reason = 'Output unparseable after retry';
+    core.warning(`[${label}] ${reason} — will use degraded fallback`);
+    return {
+        ok: false,
+        reason,
+        tokensUsed: response.tokensUsed + retry.tokensUsed,
+        inputTokens: response.inputTokens + retry.inputTokens,
+        outputTokens: response.outputTokens + retry.outputTokens,
+    };
 }
 async function runJudge(provider, specialistResults, pr, config, _sharedContext, _enabledCategories) {
     const allFindings = (0, prompts_1.collectSpecialistFindings)(specialistResults);
     core.info(`[judge/dedup] Deduplicating ${allFindings.length} raw finding(s)...`);
-    const dedupResult = await callWithParseRetry('judge/dedup', provider, (0, prompts_1.buildJudgeDedupSystemPrompt)(config), (0, prompts_1.buildJudgeDedupUserPrompt)(allFindings), config.timeoutMs, findings_1.parseDedupedFindings);
-    core.info(`[judge/dedup] ${dedupResult.value.length} finding(s) after dedup (${dedupResult.tokensUsed} tokens)`);
+    const dedupOutcome = await callWithParseRetry('judge/dedup', provider, (0, prompts_1.buildJudgeDedupSystemPrompt)(config), (0, prompts_1.buildJudgeDedupUserPrompt)(allFindings), config_1.TIMEOUT_MS, findings_1.parseDedupedFindings);
+    let dedupFindings;
+    let inputTokens = dedupOutcome.inputTokens;
+    let outputTokens = dedupOutcome.outputTokens;
+    let structured;
+    if (!dedupOutcome.ok) {
+        core.warning(`[judge/dedup] Parse failure — publishing unverified specialist findings (${dedupOutcome.reason})`);
+        structured = (0, findings_1.buildUnverifiedFallback)(allFindings, 'dedup', dedupOutcome.reason);
+        return {
+            structured,
+            tokens: { input: inputTokens, output: outputTokens },
+        };
+    }
+    dedupFindings = dedupOutcome.value;
+    core.info(`[judge/dedup] ${dedupFindings.length} finding(s) after dedup (${dedupOutcome.tokensUsed} tokens)`);
     core.info('[judge/rewrite] Rewriting finding messages and writing summary...');
-    const rewriteResult = await callWithParseRetry('judge/rewrite', provider, (0, prompts_1.buildJudgeRewriteSystemPrompt)(config), (0, prompts_1.buildJudgeRewriteUserPrompt)(dedupResult.value, pr), config.timeoutMs, findings_1.parseJudgeRewriteReview);
-    const parsedRewrite = rewriteResult.value;
-    if (parsedRewrite.findings.length < dedupResult.value.length) {
-        core.warning(`[judge/rewrite] Rewrite returned ${parsedRewrite.findings.length}/${dedupResult.value.length} finding(s) — restoring missing findings with original messages`);
+    const rewriteOutcome = await callWithParseRetry('judge/rewrite', provider, (0, prompts_1.buildJudgeRewriteSystemPrompt)(config), (0, prompts_1.buildJudgeRewriteUserPrompt)(dedupFindings, pr), config_1.TIMEOUT_MS, findings_1.parseJudgeRewriteReview);
+    inputTokens += rewriteOutcome.inputTokens;
+    outputTokens += rewriteOutcome.outputTokens;
+    if (!rewriteOutcome.ok) {
+        core.warning(`[judge/rewrite] Parse failure — publishing deduped findings without rewrite (${rewriteOutcome.reason})`);
+        structured = (0, findings_1.buildUnverifiedFallback)(dedupFindings, 'rewrite', rewriteOutcome.reason);
+        return {
+            structured,
+            tokens: { input: inputTokens, output: outputTokens },
+        };
     }
-    const structured = (0, findings_1.reconcileRewrittenFindings)(dedupResult.value, parsedRewrite);
-    if (structured.findings.length !== dedupResult.value.length) {
-        core.error(`[judge/rewrite] Finding count mismatch after reconcile: ${structured.findings.length} vs ${dedupResult.value.length}`);
+    const parsedRewrite = rewriteOutcome.value;
+    if (parsedRewrite.findings.length < dedupFindings.length) {
+        core.warning(`[judge/rewrite] Rewrite returned ${parsedRewrite.findings.length}/${dedupFindings.length} finding(s) — restoring missing findings with original messages`);
     }
-    const totalTokens = dedupResult.tokensUsed + rewriteResult.tokensUsed;
-    const inputTokens = dedupResult.inputTokens + rewriteResult.inputTokens;
-    const outputTokens = dedupResult.outputTokens + rewriteResult.outputTokens;
-    core.info(`[judge/rewrite] Final output: ${structured.findings.length} finding(s) (${rewriteResult.tokensUsed} tokens; ${totalTokens} total judge tokens)`);
+    structured = (0, findings_1.reconcileRewrittenFindings)(dedupFindings, parsedRewrite);
+    if (structured.findings.length !== dedupFindings.length) {
+        core.error(`[judge/rewrite] Finding count mismatch after reconcile: ${structured.findings.length} vs ${dedupFindings.length}`);
+    }
+    core.info(`[judge/rewrite] Final output: ${structured.findings.length} finding(s) (${rewriteOutcome.tokensUsed} tokens; ${inputTokens + outputTokens} total judge tokens)`);
     return {
         structured,
         tokens: { input: inputTokens, output: outputTokens },
@@ -36234,40 +36268,10 @@ async function runReview(provider, config, pr) {
         }
     }
     // Stage 2: Judge — deduplicate then rewrite (two agent calls).
-    // Fail-closed: if either judge agent crashes (including unrecoverable parse failures)
-    // we block the PR rather than silently shipping unverified findings.
-    let judgeTokens = { input: 0, output: 0 };
-    let structured;
-    try {
-        const judgeResult = await (0, judge_1.runJudge)(provider, specialistResults, pr, config, sharedContext, categoryIds);
-        structured = judgeResult.structured;
-        judgeTokens = judgeResult.tokens;
-    }
-    catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        core.error(`[judge] Judge failed: ${message} — failing closed (blocking PR)`);
-        const totalInput = specialistResults.reduce((s, r) => s + r.tokens.input, 0);
-        const totalOutput = specialistResults.reduce((s, r) => s + r.tokens.output, 0);
-        const markdown = (0, format_1.formatReviewMarkdown)({
-            structured: undefined,
-            pr,
-            config,
-            categories: categoryIds,
-            totalTokens: { input: totalInput, output: totalOutput },
-            apiCalls: activeCategories.length + 2,
-            specialistResults,
-            failClosed: true,
-            failReason: message,
-        });
-        return {
-            markdown,
-            hasCritical: true,
-            categories: categoryIds,
-            tokensUsed: totalInput + totalOutput,
-            inputTokens: totalInput,
-            outputTokens: totalOutput,
-        };
-    }
+    // Parse failures fall back to unverified specialist/deduped findings inside runJudge.
+    const judgeResult = await (0, judge_1.runJudge)(provider, specialistResults, pr, config, sharedContext, categoryIds);
+    const structured = judgeResult.structured;
+    const judgeTokens = judgeResult.tokens;
     core.info(`[judge] Final approved findings: ${structured.findings.length}`);
     for (const f of structured.findings) {
         core.info(`[judge] ✅ ${f.severity.toUpperCase()} ${f.file}:${f.line} — ${f.message}`);
@@ -36286,7 +36290,6 @@ async function runReview(provider, config, pr) {
         totalTokens: { input: totalInput, output: totalOutput },
         apiCalls,
         specialistResults,
-        failClosed: false,
     });
     return {
         markdown,
@@ -36389,9 +36392,8 @@ function buildPrMetadata(pr, config) {
     if (pr.body) {
         prompt += `\n### PR Description\n<pr_description>\n${pr.body}\n</pr_description>\n`;
     }
-    if (config.customPrompt) {
-        // customPrompt is repo context set by the repo owner — trusted, no delimiter needed.
-        prompt += `\n### Additional Context (repo-owner supplied)\n${config.customPrompt}\n`;
+    if (config.repoContext) {
+        prompt += `\n### Repository Context\n${config.repoContext}\n`;
     }
     return prompt;
 }
@@ -36457,8 +36459,8 @@ QUALITY RULES:
 ${guidelines}
 
 ${(0, config_1.getSpecialistJsonInstruction)()}`;
-    if (config.extraInstructions) {
-        prompt += `\n\nAdditional company instructions:\n${config.extraInstructions}`;
+    if (config.reviewPolicy) {
+        prompt += `\n\nReview policy:\n${config.reviewPolicy}`;
     }
     return prompt;
 }
@@ -36488,8 +36490,8 @@ Additional rules:
 - When merging genuine duplicates: keep the highest severity, keep the most specific codeSnippet, combine unique failure-mode details into a single message, keep the highest confidence.
 
 ${(0, config_1.getJudgeDedupJsonInstruction)()}`;
-    if (config.extraInstructions) {
-        prompt += `\n\nAdditional company instructions:\n${config.extraInstructions}`;
+    if (config.reviewPolicy) {
+        prompt += `\n\nReview policy:\n${config.reviewPolicy}`;
     }
     return prompt;
 }
@@ -36509,8 +36511,8 @@ Sentence 2: What to do — name the exact fix and where to apply it.
 Do not explain why it matters. Do not repeat information from sentence 1 in sentence 2. Do not use: "Ensure", "Consider", "Make sure", "You should", "This could".
 
 ${(0, config_1.getJudgeRewriteJsonInstruction)()}`;
-    if (config.extraInstructions) {
-        prompt += `\n\nAdditional company instructions:\n${config.extraInstructions}`;
+    if (config.reviewPolicy) {
+        prompt += `\n\nReview policy:\n${config.reviewPolicy}`;
     }
     return prompt;
 }
@@ -36591,6 +36593,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runSpecialistAgent = runSpecialistAgent;
 const core = __importStar(__nccwpck_require__(7484));
+const config_1 = __nccwpck_require__(2973);
 const findings_1 = __nccwpck_require__(1001);
 const prompts_1 = __nccwpck_require__(2413);
 async function runSpecialistAgent(provider, categoryId, guidelines, pr, config, sharedContext) {
@@ -36604,7 +36607,7 @@ async function runSpecialistAgent(provider, categoryId, guidelines, pr, config, 
         const response = await provider.review({
             systemPrompt,
             userPrompt,
-            timeoutMs: config.timeoutMs,
+            timeoutMs: config_1.TIMEOUT_MS,
         });
         let findings;
         try {
@@ -36679,7 +36682,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.MAX_PROMPT_CHARS = exports.SEVERITY_RUBRIC = exports.MAX_PROMPT_TOKENS = void 0;
+exports.MAX_PROMPT_CHARS = exports.SEVERITY_RUBRIC = exports.MAX_FILE_SIZE = exports.TIMEOUT_MS = exports.MAX_PROMPT_TOKENS = void 0;
 exports.charsToTokens = charsToTokens;
 exports.tokensToChars = tokensToChars;
 exports.getSpecialistJsonInstruction = getSpecialistJsonInstruction;
@@ -36708,6 +36711,10 @@ function tokensToChars(tokens) {
  * 75 000 tokens ≈ 300 000 chars, matching model context windows for claude-sonnet-4.
  */
 exports.MAX_PROMPT_TOKENS = 75_000;
+/** Timeout per LLM API call in milliseconds. */
+exports.TIMEOUT_MS = 120_000;
+/** Maximum characters per file when including file contents. */
+exports.MAX_FILE_SIZE = 10_000;
 /** Shared severity scale — identical wording used in both specialist and judge prompts. */
 exports.SEVERITY_RUBRIC = `Severity scale (identical for all agents):
 - "critical": would you page the on-call engineer at 3 am? Data loss, auth bypass, crash, secret exposure.
@@ -36798,24 +36805,18 @@ const ENV_VAR_NAMES = {
     provider: 'REVIEW_PROVIDER',
     model: 'REVIEW_MODEL',
     review_categories: 'REVIEW_CATEGORIES',
-    custom_prompt: 'CUSTOM_PROMPT',
-    extra_instructions: 'EXTRA_INSTRUCTIONS',
+    repo_context: 'REPO_CONTEXT',
+    review_policy: 'REVIEW_POLICY',
     security: 'SECURITY_GUIDELINES',
     tests: 'TEST_GUIDELINES',
     performance: 'PERFORMANCE_GUIDELINES',
     code: 'CODE_GUIDELINES',
-    max_diff_size: 'MAX_DIFF_SIZE',
-    post_review_comment: 'POST_REVIEW_COMMENT',
-    post_inline_comments: 'POST_INLINE_COMMENTS',
-    fail_on_critical: 'FAIL_ON_CRITICAL',
     ignore_paths: 'IGNORE_PATHS',
-    redact_secrets: 'REDACT_SECRETS',
-    timeout: 'REVIEW_TIMEOUT',
-    include_file_contents: 'INCLUDE_FILE_CONTENTS',
-    context_files: 'CONTEXT_FILES',
-    max_file_size: 'MAX_FILE_SIZE',
     github_token: 'GITHUB_TOKEN',
     azure_endpoint: 'AZURE_ENDPOINT',
+    state_store: 'STATE_STORE',
+    state_gist_id: 'STATE_GIST_ID',
+    incremental_review: 'INCREMENTAL_REVIEW',
 };
 function resolve(inputName, fallback = '') {
     return core.getInput(inputName) || process.env[ENV_VAR_NAMES[inputName]] || fallback;
@@ -36862,7 +36863,6 @@ function loadConfig() {
     if (provider === 'azure' && !azureEndpoint) {
         throw new Error('Provider "azure" requires an endpoint URL. Set the "azure_endpoint" input or AZURE_ENDPOINT env var.');
     }
-    const timeoutSec = parseInt(resolve('timeout', '120'), 10);
     return {
         provider,
         apiKey,
@@ -36876,24 +36876,15 @@ function loadConfig() {
             code: resolveGuidelines('code'),
             custom: {
                 enabled: enabledCategories.includes('custom'),
-                guidelines: resolve('custom_prompt'),
+                guidelines: resolve('repo_context'),
             },
         },
-        customPrompt: resolve('custom_prompt'),
-        extraInstructions: resolve('extra_instructions'),
-        maxDiffSize: parseInt(resolve('max_diff_size', '60000'), 10),
-        postReviewComment: bool(resolve('post_review_comment'), true),
-        postInlineComments: bool(resolve('post_inline_comments'), true),
-        failOnCritical: bool(resolve('fail_on_critical'), false),
+        repoContext: resolve('repo_context'),
+        reviewPolicy: resolve('review_policy'),
         ignorePatterns: (0, ignore_1.parseIgnorePatterns)(resolve('ignore_paths')),
-        redactSecrets: bool(resolve('redact_secrets'), true),
-        timeoutMs: timeoutSec * 1000,
-        includeFileContents: bool(resolve('include_file_contents'), true),
-        contextFiles: resolve('context_files')
-            .split(',')
-            .map((f) => f.trim())
-            .filter(Boolean),
-        maxFileSize: parseInt(resolve('max_file_size', '10000'), 10),
+        stateStore: resolve('state_store', 'comment-marker'),
+        stateGistId: resolve('state_gist_id'),
+        incrementalReview: bool(resolve('incremental_review'), true),
     };
 }
 /**
@@ -36954,6 +36945,7 @@ exports.scoreFile = scoreFile;
 exports.buildReviewContext = buildReviewContext;
 exports.buildFileSummary = buildFileSummary;
 const core = __importStar(__nccwpck_require__(7484));
+const config_1 = __nccwpck_require__(2973);
 const ignore_1 = __nccwpck_require__(9049);
 // ─── Test-file detection ────────────────────────────────────────────
 exports.TEST_PATH_PATTERNS = [
@@ -37098,9 +37090,9 @@ async function prepareDiffForReview(rawDiff, ignoredFiles, options) {
             core.warning(`Redacted ${redactionCount} potential secret(s) from diff before sending to AI`);
         }
     }
-    if (diff.length > options.maxDiffSize) {
-        core.warning(`Diff size (${diff.length} chars) exceeds max (${options.maxDiffSize}). Truncating.`);
-        diff = smartTruncateDiff(diff, options.maxDiffSize);
+    if (diff.length > config_1.MAX_PROMPT_CHARS) {
+        core.warning(`Diff size (${diff.length} chars) exceeds budget (${config_1.MAX_PROMPT_CHARS}). Truncating.`);
+        diff = smartTruncateDiff(diff, config_1.MAX_PROMPT_CHARS);
     }
     return { diff, redactionCount };
 }
@@ -37475,6 +37467,9 @@ exports.parseSpecialistFindings = parseSpecialistFindings;
 exports.hasCriticalFindings = hasCriticalFindings;
 exports.sortFindingsForReview = sortFindingsForReview;
 exports.parseDedupedFindings = parseDedupedFindings;
+exports.mechanicalDedup = mechanicalDedup;
+exports.buildUnverifiedFallback = buildUnverifiedFallback;
+exports.salvageTruncatedFindingsJson = salvageTruncatedFindingsJson;
 exports.extractJson = extractJson;
 exports.formatFindingsMarkdown = formatFindingsMarkdown;
 const VALID_SEVERITIES = new Set(['critical', 'warning', 'suggestion']);
@@ -37508,8 +37503,7 @@ function isVagueFinding(message) {
 }
 function parseStructuredReview(raw, options = {}) {
     const { capFindings = true, filterVague = true, filterLowConfidence = true, } = options;
-    const json = extractJson(raw);
-    const parsed = JSON.parse(json);
+    const parsed = parseJsonPayload(raw);
     const summary = typeof parsed.summary === 'string' ? parsed.summary : '';
     const findings = [];
     if (Array.isArray(parsed.findings)) {
@@ -37652,8 +37646,7 @@ function sortFindingsForReview(findings) {
  * Accepts { "findings": [...] } (required by OpenAI/Azure json_object mode) or a bare array.
  */
 function parseDedupedFindings(raw) {
-    const json = extractJson(raw);
-    const parsed = JSON.parse(json);
+    const parsed = parseJsonPayload(raw);
     const items = coerceFindingsArray(parsed);
     const findings = [];
     for (const item of items) {
@@ -37693,6 +37686,140 @@ function coerceFindingsArray(parsed) {
         return parsed.findings;
     }
     throw new Error('Dedup agent output must be a JSON array or { "findings": [...] } object');
+}
+const SEVERITY_RANK = {
+    critical: 0,
+    warning: 1,
+    suggestion: 2,
+};
+/** Merge findings by category + file + line, keeping the highest-severity entry. */
+function mechanicalDedup(findings) {
+    const seen = new Map();
+    for (const f of findings) {
+        const key = `${f.category}\0${f.file ?? ''}\0${String(f.line ?? '')}`;
+        const existing = seen.get(key);
+        if (!existing ||
+            SEVERITY_RANK[f.severity] < SEVERITY_RANK[existing.severity]) {
+            seen.set(key, f);
+        }
+    }
+    return sortFindingsForReview([...seen.values()]);
+}
+/** Build a degraded review when a judge stage fails to parse after retry. */
+function buildUnverifiedFallback(findings, stage, reason) {
+    const capped = stage === 'dedup'
+        ? mechanicalDedup(findings).slice(0, MAX_FINDINGS)
+        : sortFindingsForReview(findings).slice(0, MAX_FINDINGS);
+    const summary = stage === 'dedup'
+        ? `Review completed with degraded judge output (dedup failed: ${reason}). Findings below are from specialist agents and may include duplicates.`
+        : `Review completed with degraded judge output (rewrite failed: ${reason}). Findings were deduplicated but messages were not rewritten.`;
+    return {
+        summary,
+        findings: capped,
+        unverified: true,
+        unverifiedStage: stage,
+    };
+}
+function extractCompleteJsonObjects(text) {
+    const objects = [];
+    let i = 0;
+    while (i < text.length) {
+        if (text[i] !== '{') {
+            i++;
+            continue;
+        }
+        let depth = 0;
+        let inString = false;
+        let escape = false;
+        const start = i;
+        for (; i < text.length; i++) {
+            const ch = text[i];
+            if (inString) {
+                if (escape)
+                    escape = false;
+                else if (ch === '\\')
+                    escape = true;
+                else if (ch === '"')
+                    inString = false;
+                continue;
+            }
+            if (ch === '"') {
+                inString = true;
+                continue;
+            }
+            if (ch === '{')
+                depth++;
+            else if (ch === '}') {
+                depth--;
+                if (depth === 0) {
+                    objects.push(text.slice(start, i + 1));
+                    i++;
+                    break;
+                }
+            }
+        }
+        if (depth !== 0)
+            break;
+    }
+    return objects;
+}
+/**
+ * Salvage complete finding objects from truncated judge JSON
+ * (e.g. output cut off mid-array or mid-object).
+ */
+function salvageTruncatedFindingsJson(raw) {
+    const trimmed = raw.trim();
+    const findingsKeyMatch = trimmed.match(/"findings"\s*:\s*\[/);
+    let arraySlice;
+    let wrapInObject;
+    if (findingsKeyMatch && findingsKeyMatch.index !== undefined) {
+        const arrayStart = trimmed.indexOf('[', findingsKeyMatch.index);
+        if (arrayStart === -1)
+            return null;
+        arraySlice = trimmed.slice(arrayStart);
+        wrapInObject = true;
+    }
+    else {
+        const arrayStart = trimmed.indexOf('[');
+        if (arrayStart === -1)
+            return null;
+        arraySlice = trimmed.slice(arrayStart);
+        wrapInObject = false;
+    }
+    const objects = extractCompleteJsonObjects(arraySlice);
+    if (objects.length === 0)
+        return null;
+    const arrayJson = `[${objects.join(',')}]`;
+    try {
+        JSON.parse(arrayJson);
+    }
+    catch {
+        return null;
+    }
+    return wrapInObject ? `{"findings":${arrayJson}}` : arrayJson;
+}
+function parseJsonPayload(raw) {
+    const candidates = [];
+    const extracted = extractJson(raw);
+    candidates.push(extracted);
+    for (const salvageSource of [raw, extracted]) {
+        const salvaged = salvageTruncatedFindingsJson(salvageSource);
+        if (salvaged)
+            candidates.push(salvaged);
+    }
+    const seen = new Set();
+    for (const candidate of candidates) {
+        if (seen.has(candidate))
+            continue;
+        seen.add(candidate);
+        try {
+            return JSON.parse(candidate);
+        }
+        catch {
+            continue;
+        }
+    }
+    throw new SyntaxError('No parseable JSON found');
 }
 function extractJson(text) {
     const trimmed = text.trim();
@@ -38285,6 +38412,7 @@ const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const ignore_1 = __nccwpck_require__(9049);
 const diff_1 = __nccwpck_require__(5036);
+const config_1 = __nccwpck_require__(2973);
 const client_1 = __nccwpck_require__(6584);
 const file_contents_1 = __nccwpck_require__(5092);
 async function listAllChangedFiles(octokit, owner, repo, prNumber) {
@@ -38310,6 +38438,39 @@ function partitionFiles(allFiles, ignorePatterns) {
     const reviewedFiles = allFiles.filter((f) => !(0, ignore_1.shouldIgnoreFile)(f, ignorePatterns));
     return { reviewedFiles, ignoredFiles };
 }
+/**
+ * Fetch the incremental diff between two commits using the compare API.
+ * Returns the diff string and the list of files changed in that range.
+ */
+async function fetchIncrementalDiff(octokit, owner, repo, baseSha, headSha) {
+    const { data: comparison } = await octokit.rest.repos.compareCommitsWithBasehead({
+        owner,
+        repo,
+        basehead: `${baseSha}...${headSha}`,
+        mediaType: { format: 'diff' },
+    });
+    const diffText = comparison;
+    const { data: comparisonJson } = await octokit.rest.repos.compareCommitsWithBasehead({
+        owner,
+        repo,
+        basehead: `${baseSha}...${headSha}`,
+    });
+    const changedFiles = (comparisonJson.files ?? []).map((f) => f.filename);
+    return { diff: diffText, changedFiles };
+}
+/**
+ * Validate that a SHA exists in the repo (the old reviewed commit hasn't
+ * been force-pushed away). Returns true if the commit is reachable.
+ */
+async function isCommitReachable(octokit, owner, repo, sha) {
+    try {
+        await octokit.rest.git.getCommit({ owner, repo, commit_sha: sha });
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
 async function getPullRequestData(token, options) {
     const octokit = (0, client_1.getOctokit)(token);
     const context = github.context;
@@ -38323,28 +38484,54 @@ async function getPullRequestData(token, options) {
         repo,
         pull_number: prNumber,
     });
-    const { data: rawDiff } = await octokit.rest.pulls.get({
-        owner,
-        repo,
-        pull_number: prNumber,
-        mediaType: { format: 'diff' },
-    });
-    const allFiles = await listAllChangedFiles(octokit, owner, repo, prNumber);
+    const headSha = pr.head.sha;
+    let isIncremental = false;
+    let incrementalBaseSha;
+    let rawDiff;
+    let allFiles;
+    // Attempt incremental diff if we have a previous review SHA
+    if (options.lastReviewedSha && options.lastReviewedSha !== headSha) {
+        const reachable = await isCommitReachable(octokit, owner, repo, options.lastReviewedSha);
+        if (reachable) {
+            core.info(`Incremental review: diffing ${options.lastReviewedSha.slice(0, 7)}..${headSha.slice(0, 7)}`);
+            const incremental = await fetchIncrementalDiff(octokit, owner, repo, options.lastReviewedSha, headSha);
+            rawDiff = incremental.diff;
+            allFiles = incremental.changedFiles;
+            isIncremental = true;
+            incrementalBaseSha = options.lastReviewedSha;
+        }
+        else {
+            core.warning(`Previous review SHA ${options.lastReviewedSha.slice(0, 7)} is no longer reachable ` +
+                `(force-push?). Falling back to full PR diff.`);
+            const { data: fullDiff } = await octokit.rest.pulls.get({
+                owner, repo, pull_number: prNumber,
+                mediaType: { format: 'diff' },
+            });
+            rawDiff = fullDiff;
+            allFiles = await listAllChangedFiles(octokit, owner, repo, prNumber);
+        }
+    }
+    else {
+        // No previous state or same SHA — full PR diff
+        const { data: fullDiff } = await octokit.rest.pulls.get({
+            owner, repo, pull_number: prNumber,
+            mediaType: { format: 'diff' },
+        });
+        rawDiff = fullDiff;
+        allFiles = await listAllChangedFiles(octokit, owner, repo, prNumber);
+    }
     const { reviewedFiles, ignoredFiles } = partitionFiles(allFiles, options.ignorePatterns);
     if (ignoredFiles.length > 0) {
         core.info(`Skipping ${ignoredFiles.length} ignored file(s): ${ignoredFiles.slice(0, 10).join(', ')}${ignoredFiles.length > 10 ? '...' : ''}`);
     }
-    const { diff, redactionCount } = await (0, diff_1.prepareDiffForReview)(rawDiff, new Set(ignoredFiles), { maxDiffSize: options.maxDiffSize, redactSecrets: options.redactSecrets });
+    const { diff, redactionCount } = await (0, diff_1.prepareDiffForReview)(rawDiff, new Set(ignoredFiles), { redactSecrets: true });
     if (reviewedFiles.length === 0) {
         core.warning('No reviewable files after applying ignore patterns.');
     }
-    let fileContents = [];
-    if (options.includeFileContents) {
-        const filesToFetch = new Set([...reviewedFiles, ...options.contextFiles]);
-        fileContents = await (0, file_contents_1.fetchFileContents)(octokit, owner, repo, pr.head.ref, filesToFetch, options.maxFileSize, options.redactSecrets);
-        core.info(`Fetched ${fileContents.length} file(s) for full context ` +
-            `(${fileContents.filter((f) => f.truncated).length} truncated)`);
-    }
+    const filesToFetch = new Set(reviewedFiles);
+    const fileContents = await (0, file_contents_1.fetchFileContents)(octokit, owner, repo, pr.head.ref, filesToFetch, config_1.MAX_FILE_SIZE, true);
+    core.info(`Fetched ${fileContents.length} file(s) for full context ` +
+        `(${fileContents.filter((f) => f.truncated).length} truncated)`);
     return {
         number: prNumber,
         title: pr.title,
@@ -38352,12 +38539,15 @@ async function getPullRequestData(token, options) {
         diff,
         baseBranch: pr.base.ref,
         headBranch: pr.head.ref,
+        headSha,
         author: pr.user?.login ?? 'unknown',
         changedFiles: allFiles,
         reviewedFiles,
         ignoredFiles,
         redactionCount,
         fileContents,
+        isIncremental,
+        incrementalBaseSha,
     };
 }
 
@@ -38404,30 +38594,60 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(7484));
+const github = __importStar(__nccwpck_require__(3228));
 const config_1 = __nccwpck_require__(2973);
 const providers_1 = __nccwpck_require__(7486);
 const github_1 = __nccwpck_require__(1631);
 const agents_1 = __nccwpck_require__(6758);
 const sanitize_1 = __nccwpck_require__(5540);
-const MAX_OUTPUT_BYTES = 900_000; // GitHub Actions output limit is ~1MB
+const state_1 = __nccwpck_require__(2341);
+const MAX_OUTPUT_BYTES = 900_000;
 async function main() {
     try {
         core.info('AI PR Reviewer starting...');
         const config = (0, config_1.loadConfig)();
         core.info(`Provider: ${config.provider} | Model: ${config.model}`);
         const provider = (0, providers_1.createProvider)(config.provider, config.apiKey, config.model, config.azureEndpoint);
+        // ── State: read last_reviewed_sha ────────────────────────────
+        const { owner, repo } = github.context.repo;
+        const fullRepo = `${owner}/${repo}`;
+        const prNumber = github.context.payload.pull_request?.number;
+        const stateStore = config.incrementalReview
+            ? (0, state_1.createStateStore)(config.stateStore, config.githubToken, config.stateGistId)
+            : null;
+        let lastReviewedSha;
+        if (stateStore && prNumber) {
+            const prevState = await stateStore.get(fullRepo, prNumber);
+            if (prevState) {
+                lastReviewedSha = prevState.lastReviewedSha;
+                core.info(`Previous review state found: sha=${lastReviewedSha.slice(0, 7)}, ` +
+                    `review #${prevState.reviewCount} at ${prevState.lastReviewedAt}`);
+            }
+            else {
+                core.info('No previous review state — first review for this PR.');
+            }
+        }
         core.info('Fetching PR data...');
         const pr = await (0, github_1.getPullRequestData)(config.githubToken, {
-            maxDiffSize: config.maxDiffSize,
             ignorePatterns: config.ignorePatterns,
-            redactSecrets: config.redactSecrets,
-            contextFiles: config.contextFiles,
-            includeFileContents: config.includeFileContents,
-            maxFileSize: config.maxFileSize,
+            lastReviewedSha: config.incrementalReview ? lastReviewedSha : undefined,
         });
-        core.info(`PR #${pr.number}: "${pr.title}" (${pr.reviewedFiles.length} files to review)`);
+        if (pr.isIncremental) {
+            core.info(`Incremental review: ${pr.incrementalBaseSha?.slice(0, 7)}..${pr.headSha.slice(0, 7)} ` +
+                `(${pr.reviewedFiles.length} changed files in this push)`);
+        }
+        else {
+            core.info(`Full review: PR #${pr.number}: "${pr.title}" (${pr.reviewedFiles.length} files to review)`);
+        }
+        if (pr.diff.trim().length === 0 && pr.reviewedFiles.length === 0) {
+            core.info('No new changes to review. Skipping.');
+            core.setOutput('review_body', '');
+            core.setOutput('has_critical_issues', 'false');
+            core.setOutput('categories_reviewed', '');
+            core.setOutput('findings_count', '0');
+            return;
+        }
         const result = await (0, agents_1.runReview)(provider, config, pr);
-        // Truncate output to stay under GitHub Actions 1MB limit
         const reviewOutput = result.markdown.length > MAX_OUTPUT_BYTES
             ? result.markdown.slice(0, MAX_OUTPUT_BYTES) + '\n[truncated]'
             : result.markdown;
@@ -38435,23 +38655,36 @@ async function main() {
         core.setOutput('has_critical_issues', result.hasCritical.toString());
         core.setOutput('categories_reviewed', result.categories.join(','));
         core.setOutput('findings_count', String(result.structured?.findings.length ?? 0));
-        if (config.postReviewComment) {
-            core.info('Posting review comment...');
-            await (0, github_1.postReviewComment)(config.githubToken, pr.number, result.markdown);
+        // Always post review comment
+        core.info('Posting review comment...');
+        let commentBody = result.markdown;
+        if (config.stateStore === 'comment-marker') {
+            const stateJson = JSON.stringify({
+                lastReviewedSha: pr.headSha,
+                lastReviewedAt: new Date().toISOString(),
+                reviewCount: (stateStore ? ((await stateStore.get(fullRepo, pr.number))?.reviewCount ?? 0) : 0) + 1,
+            });
+            commentBody += `\n<!-- ai-pr-reviewer-state: ${stateJson} -->`;
         }
-        if (config.postInlineComments && result.structured?.findings.length) {
+        await (0, github_1.postReviewComment)(config.githubToken, pr.number, commentBody);
+        // Always post inline comments when findings exist
+        if (result.structured?.findings.length) {
             core.info('Posting inline review comments...');
             const { posted, skipped } = await (0, github_1.postInlineReview)(config.githubToken, pr.number, pr.diff, result.structured.findings);
             if (posted > 0 || skipped > 0) {
                 core.info(`Inline comments: ${posted} posted, ${skipped} skipped (line not in diff)`);
             }
         }
-        if (result.hasCritical && config.failOnCritical) {
-            core.setFailed('Critical issues found in PR review. See the review comment for details.');
+        // ── State: persist last_reviewed_sha after successful review ──
+        if (stateStore && config.stateStore === 'gist') {
+            const prevState = await stateStore.get(fullRepo, pr.number);
+            await stateStore.set(fullRepo, pr.number, {
+                lastReviewedSha: pr.headSha,
+                lastReviewedAt: new Date().toISOString(),
+                reviewCount: (prevState?.reviewCount ?? 0) + 1,
+            });
         }
-        else {
-            core.info('Review complete.');
-        }
+        core.info('Review complete.');
     }
     catch (error) {
         const raw = error instanceof Error ? error.message : String(error);
@@ -38835,6 +39068,174 @@ function sanitizeErrorMessage(message) {
     result = result.replace(/xox[baprs]-[A-Za-z0-9-]{10,}/g, 'xox*-***');
     result = result.replace(/Bearer\s+[A-Za-z0-9\-._~+/]{10,}=*/gi, 'Bearer ***');
     return result;
+}
+
+
+/***/ }),
+
+/***/ 2341:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.CommitStatusStore = exports.GistStateStore = exports.createStateStore = void 0;
+var store_1 = __nccwpck_require__(6992);
+Object.defineProperty(exports, "createStateStore", ({ enumerable: true, get: function () { return store_1.createStateStore; } }));
+Object.defineProperty(exports, "GistStateStore", ({ enumerable: true, get: function () { return store_1.GistStateStore; } }));
+Object.defineProperty(exports, "CommitStatusStore", ({ enumerable: true, get: function () { return store_1.CommitStatusStore; } }));
+
+
+/***/ }),
+
+/***/ 6992:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.CommitStatusStore = exports.GistStateStore = void 0;
+exports.createStateStore = createStateStore;
+const core = __importStar(__nccwpck_require__(7484));
+const client_1 = __nccwpck_require__(6584);
+// ─── GitHub Gist-backed store ────────────────────────────────────
+const STATE_FILE_PREFIX = 'ai-pr-reviewer-state-';
+function stateFileName(repo, prNumber) {
+    const safeRepo = repo.replace(/\//g, '-');
+    return `${STATE_FILE_PREFIX}${safeRepo}-${prNumber}.json`;
+}
+class GistStateStore {
+    octokit;
+    gistId;
+    constructor(token, gistId) {
+        this.octokit = (0, client_1.getOctokit)(token);
+        this.gistId = gistId;
+    }
+    async get(repo, prNumber) {
+        const filename = stateFileName(repo, prNumber);
+        try {
+            const { data: gist } = await this.octokit.rest.gists.get({
+                gist_id: this.gistId,
+            });
+            const file = gist.files?.[filename];
+            if (!file?.content)
+                return null;
+            return JSON.parse(file.content);
+        }
+        catch (err) {
+            const status = err.status;
+            if (status === 404) {
+                core.warning(`State gist ${this.gistId} not found. Starting fresh.`);
+                return null;
+            }
+            core.warning(`Failed to read state from gist: ${err instanceof Error ? err.message : String(err)}`);
+            return null;
+        }
+    }
+    async set(repo, prNumber, state) {
+        const filename = stateFileName(repo, prNumber);
+        try {
+            await this.octokit.rest.gists.update({
+                gist_id: this.gistId,
+                files: {
+                    [filename]: {
+                        content: JSON.stringify(state, null, 2),
+                    },
+                },
+            });
+            core.info(`State persisted to gist for PR #${prNumber} (sha: ${state.lastReviewedSha})`);
+        }
+        catch (err) {
+            core.warning(`Failed to persist state to gist: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+        }
+    }
+}
+exports.GistStateStore = GistStateStore;
+// ─── GitHub Actions artifact-based store (no external Gist needed) ──
+class CommitStatusStore {
+    octokit;
+    constructor(token) {
+        this.octokit = (0, client_1.getOctokit)(token);
+    }
+    async get(repo, prNumber) {
+        const [owner, repoName] = repo.split('/');
+        try {
+            const { data: comments } = await this.octokit.rest.issues.listComments({
+                owner,
+                repo: repoName,
+                issue_number: prNumber,
+                per_page: 100,
+            });
+            for (let i = comments.length - 1; i >= 0; i--) {
+                const body = comments[i].body;
+                if (!body)
+                    continue;
+                const match = body.match(/<!-- ai-pr-reviewer-state: ({.*?}) -->/s);
+                if (match) {
+                    return JSON.parse(match[1]);
+                }
+            }
+            return null;
+        }
+        catch (err) {
+            core.warning(`Failed to read state from PR comments: ${err instanceof Error ? err.message : String(err)}`);
+            return null;
+        }
+    }
+    async set(repo, prNumber, state) {
+        core.info(`State marker for PR #${prNumber}: sha=${state.lastReviewedSha}, review #${state.reviewCount}`);
+    }
+}
+exports.CommitStatusStore = CommitStatusStore;
+function createStateStore(type, token, gistId) {
+    switch (type) {
+        case 'gist':
+            if (!gistId) {
+                throw new Error('state_store=gist requires state_gist_id to be set.');
+            }
+            return new GistStateStore(token, gistId);
+        case 'comment-marker':
+            return new CommitStatusStore(token);
+        case 'none':
+            return null;
+        default:
+            core.warning(`Unknown state store type "${type}". Falling back to no state.`);
+            return null;
+    }
 }
 
 

@@ -39,7 +39,6 @@ export interface BuildReviewContextOptions {
     isNew?: boolean;
 }
 export interface PrepareDiffOptions {
-    maxDiffSize: number;
     redactSecrets: boolean;
 }
 export declare const TEST_PATH_PATTERNS: RegExp[];
