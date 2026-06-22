@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { CategoryGuidelines, ReviewConfig } from '../config';
+import { CategoryGuidelines, ReviewConfig, TIMEOUT_MS } from '../config';
 import { Finding, parseSpecialistFindings } from '../findings';
 import { AIProvider } from '../providers';
 import { PullRequestData } from '../github';
@@ -36,7 +36,7 @@ export async function runSpecialistAgent(
     const response = await provider.review({
       systemPrompt,
       userPrompt,
-      timeoutMs: config.timeoutMs,
+      timeoutMs: TIMEOUT_MS,
     });
 
     let findings: Finding[];

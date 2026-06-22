@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import { MAX_PROMPT_CHARS } from '../config';
 import { filterDiffByFiles } from './ignore';
 
 // ─── Types ─────────────────────────────────────────────────────────
@@ -52,7 +53,6 @@ export interface BuildReviewContextOptions {
 }
 
 export interface PrepareDiffOptions {
-  maxDiffSize: number;
   redactSecrets: boolean;
 }
 
@@ -226,11 +226,11 @@ export async function prepareDiffForReview(
     }
   }
 
-  if (diff.length > options.maxDiffSize) {
+  if (diff.length > MAX_PROMPT_CHARS) {
     core.warning(
-      `Diff size (${diff.length} chars) exceeds max (${options.maxDiffSize}). Truncating.`,
+      `Diff size (${diff.length} chars) exceeds budget (${MAX_PROMPT_CHARS}). Truncating.`,
     );
-    diff = smartTruncateDiff(diff, options.maxDiffSize);
+    diff = smartTruncateDiff(diff, MAX_PROMPT_CHARS);
   }
 
   return { diff, redactionCount };

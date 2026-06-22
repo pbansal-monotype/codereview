@@ -22,12 +22,12 @@ on:
         description: 'Comma-separated categories to review'
         type: string
         default: 'security,tests,performance,code'
-      custom_prompt:
-        description: 'Repo-specific context'
+      repo_context:
+        description: 'Repository overview (tech stack, architecture, key files)'
         type: string
         default: ''
-      extra_instructions:
-        description: 'Company-wide policies'
+      review_policy:
+        description: 'Review policy and standards'
         type: string
         default: ''
       security_guidelines:
@@ -110,8 +110,8 @@ jobs:
           model: ${{ inputs.model || '' }}
           azure_endpoint: ${{ inputs.azure_endpoint || '' }}
           review_categories: ${{ inputs.review_categories || 'security,tests,performance,code' }}
-          custom_prompt: ${{ inputs.custom_prompt || '' }}
-          extra_instructions: ${{ inputs.extra_instructions || '' }}
+          repo_context: ${{ inputs.repo_context || '' }}
+          review_policy: ${{ inputs.review_policy || '' }}
           security_guidelines: ${{ inputs.security_guidelines || '' }}
           test_guidelines: ${{ inputs.test_guidelines || '' }}
           performance_guidelines: ${{ inputs.performance_guidelines || '' }}

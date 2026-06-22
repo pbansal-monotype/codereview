@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { shouldIgnoreFile } from '../context/ignore';
 import { prepareDiffForReview } from '../context/diff';
+import { MAX_FILE_SIZE } from '../config';
 import { getOctokit } from './client';
 import { fetchFileContents } from './file-contents';
 import type { FetchPROptions, PullRequestData } from './types';
@@ -164,7 +165,7 @@ export async function getPullRequestData(
   const { diff, redactionCount } = await prepareDiffForReview(
     rawDiff,
     new Set(ignoredFiles),
-    { maxDiffSize: options.maxDiffSize, redactSecrets: true },
+    { redactSecrets: true },
   );
 
   if (reviewedFiles.length === 0) {
@@ -178,7 +179,7 @@ export async function getPullRequestData(
     repo,
     pr.head.ref,
     filesToFetch,
-    options.maxFileSize,
+    MAX_FILE_SIZE,
     true,
   );
   core.info(

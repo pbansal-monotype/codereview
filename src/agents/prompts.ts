@@ -62,11 +62,7 @@ export function buildPrMetadata(
   }
 
   if (config.repoContext) {
-    prompt += `\n### Repository Overview\n${config.repoContext}\n`;
-  }
-
-  if (config.customPrompt) {
-    prompt += `\n### Additional Context (repo-owner supplied)\n${config.customPrompt}\n`;
+    prompt += `\n### Repository Context\n${config.repoContext}\n`;
   }
 
   return prompt;
@@ -160,8 +156,8 @@ ${guidelines}
 
 ${getSpecialistJsonInstruction()}`;
 
-  if (config.extraInstructions) {
-    prompt += `\n\nAdditional company instructions:\n${config.extraInstructions}`;
+  if (config.reviewPolicy) {
+    prompt += `\n\nReview policy:\n${config.reviewPolicy}`;
   }
 
   return prompt;
@@ -196,8 +192,8 @@ Additional rules:
 
 ${getJudgeDedupJsonInstruction()}`;
 
-  if (config.extraInstructions) {
-    prompt += `\n\nAdditional company instructions:\n${config.extraInstructions}`;
+  if (config.reviewPolicy) {
+    prompt += `\n\nReview policy:\n${config.reviewPolicy}`;
   }
 
   return prompt;
@@ -221,8 +217,8 @@ Do not explain why it matters. Do not repeat information from sentence 1 in sent
 
 ${getJudgeRewriteJsonInstruction()}`;
 
-  if (config.extraInstructions) {
-    prompt += `\n\nAdditional company instructions:\n${config.extraInstructions}`;
+  if (config.reviewPolicy) {
+    prompt += `\n\nReview policy:\n${config.reviewPolicy}`;
   }
 
   return prompt;

@@ -22,13 +22,9 @@ export interface ReviewConfig {
     code: CategoryGuidelines;
     custom: CategoryGuidelines;
   };
-  customPrompt: string;
   repoContext: string;
-  extraInstructions: string;
-  maxDiffSize: number;
+  reviewPolicy: string;
   ignorePatterns: string[];
-  timeoutMs: number;
-  maxFileSize: number;
   stateStore: StoreType;
   stateGistId: string;
   incrementalReview: boolean;
@@ -54,6 +50,12 @@ export function tokensToChars(tokens: number): number {
  * 75 000 tokens ≈ 300 000 chars, matching model context windows for claude-sonnet-4.
  */
 export const MAX_PROMPT_TOKENS = 75_000;
+
+/** Timeout per LLM API call in milliseconds. */
+export const TIMEOUT_MS = 120_000;
+
+/** Maximum characters per file when including file contents. */
+export const MAX_FILE_SIZE = 10_000;
 
 /** Shared severity scale — identical wording used in both specialist and judge prompts. */
 export const SEVERITY_RUBRIC = `Severity scale (identical for all agents):
@@ -154,17 +156,13 @@ const ENV_VAR_NAMES: Record<string, string> = {
   provider: 'REVIEW_PROVIDER',
   model: 'REVIEW_MODEL',
   review_categories: 'REVIEW_CATEGORIES',
-  custom_prompt: 'CUSTOM_PROMPT',
-  extra_instructions: 'EXTRA_INSTRUCTIONS',
+  repo_context: 'REPO_CONTEXT',
+  review_policy: 'REVIEW_POLICY',
   security: 'SECURITY_GUIDELINES',
   tests: 'TEST_GUIDELINES',
   performance: 'PERFORMANCE_GUIDELINES',
   code: 'CODE_GUIDELINES',
-  max_diff_size: 'MAX_DIFF_SIZE',
   ignore_paths: 'IGNORE_PATHS',
-  timeout: 'REVIEW_TIMEOUT',
-  max_file_size: 'MAX_FILE_SIZE',
-  repo_context: 'REPO_CONTEXT',
   github_token: 'GITHUB_TOKEN',
   azure_endpoint: 'AZURE_ENDPOINT',
   state_store: 'STATE_STORE',
@@ -232,8 +230,6 @@ export function loadConfig(): ReviewConfig {
     );
   }
 
-  const timeoutSec = parseInt(resolve('timeout', '120'), 10);
-
   return {
     provider,
     apiKey,
@@ -247,16 +243,12 @@ export function loadConfig(): ReviewConfig {
       code: resolveGuidelines('code'),
       custom: {
         enabled: enabledCategories.includes('custom'),
-        guidelines: resolve('custom_prompt'),
+        guidelines: resolve('repo_context'),
       },
     },
-    customPrompt: resolve('custom_prompt'),
     repoContext: resolve('repo_context'),
-    extraInstructions: resolve('extra_instructions'),
-    maxDiffSize: parseInt(resolve('max_diff_size', '60000'), 10),
+    reviewPolicy: resolve('review_policy'),
     ignorePatterns: parseIgnorePatterns(resolve('ignore_paths')),
-    timeoutMs: timeoutSec * 1000,
-    maxFileSize: parseInt(resolve('max_file_size', '10000'), 10),
     stateStore: (resolve('state_store', 'comment-marker') as StoreType),
     stateGistId: resolve('state_gist_id'),
     incrementalReview: bool(resolve('incremental_review'), true),

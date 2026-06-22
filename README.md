@@ -54,8 +54,11 @@ jobs:
           provider: anthropic
           review_categories: 'security,tests,performance,code'
           repo_context: |
-            This is a Node.js microservice using Express and PostgreSQL.
-            Key files: src/middleware/auth.ts (auth), src/db/schema.prisma (DB schema).
+            Node.js microservice using Express and PostgreSQL.
+            Auth middleware at src/middleware/auth.ts.
+          review_policy: |
+            All new routes must use the auth middleware.
+            Error responses must use our AppError class.
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -122,19 +125,13 @@ The system has multiple layers to prevent low-quality findings:
 | `test_guidelines` | No | built-in | Custom test coverage review rules |
 | `performance_guidelines` | No | built-in | Custom performance review rules |
 | `code_guidelines` | No | built-in | Custom code quality review rules |
-| `custom_prompt` | No | — | Repo-specific context (tech stack, architecture) |
-| `repo_context` | No | — | Free-text overview of the repo — tech stack, key files, conventions |
-| `extra_instructions` | No | — | Company-wide policies appended to all agent prompts |
-| `max_diff_size` | No | `60000` | Max diff characters before truncation |
+| `repo_context` | No | — | Repository overview (tech stack, architecture, key files) |
+| `review_policy` | No | — | Review policy and standards injected into all agent prompts |
 | `ignore_paths` | No | — | Glob patterns to skip (e.g. `**/migrations/**`) |
-| `timeout` | No | `120` | Timeout in seconds per API call |
-| `max_file_size` | No | `10000` | Max characters per file |
 
-> `custom_prompt` = **repo-specific context** ("This is a Django app with Celery workers.")
+> `repo_context` = **what the repo is** ("Django app with Celery workers. Prisma ORM. Auth in src/middleware/auth.ts.")
 >
-> `repo_context` = **repository overview** ("Express + PostgreSQL. Auth middleware at src/middleware/auth.ts. Prisma schema at src/db/schema.prisma.")
->
-> `extra_instructions` = **company-wide policy** ("All APIs must validate auth tokens. Follow standards at wiki.internal/standards.")
+> `review_policy` = **how to review it** ("All APIs must validate auth tokens. Follow standards at wiki.internal/standards.")
 
 The following behaviors are always enabled and cannot be toggled off:
 - **Review comments** — Summary and inline comments are always posted to the PR
@@ -170,7 +167,7 @@ env:
   AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
   AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
   SECURITY_GUIDELINES: ${{ vars.SECURITY_GUIDELINES }}
-  EXTRA_INSTRUCTIONS: ${{ vars.EXTRA_INSTRUCTIONS }}
+  REVIEW_POLICY: ${{ vars.REVIEW_POLICY }}
 ```
 
 <details>
@@ -188,13 +185,9 @@ env:
 | `test_guidelines` | `TEST_GUIDELINES` |
 | `performance_guidelines` | `PERFORMANCE_GUIDELINES` |
 | `code_guidelines` | `CODE_GUIDELINES` |
-| `custom_prompt` | `CUSTOM_PROMPT` |
 | `repo_context` | `REPO_CONTEXT` |
-| `extra_instructions` | `EXTRA_INSTRUCTIONS` |
-| `max_diff_size` | `MAX_DIFF_SIZE` |
+| `review_policy` | `REVIEW_POLICY` |
 | `ignore_paths` | `IGNORE_PATHS` |
-| `timeout` | `REVIEW_TIMEOUT` |
-| `max_file_size` | `MAX_FILE_SIZE` |
 
 </details>
 

@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { ReviewConfig } from '../config';
+import { ReviewConfig, TIMEOUT_MS } from '../config';
 import {
   parseJudgeRewriteReview,
   parseDedupedFindings,
@@ -94,7 +94,7 @@ export async function runJudge(
     provider,
     buildJudgeDedupSystemPrompt(config),
     buildJudgeDedupUserPrompt(allFindings),
-    config.timeoutMs,
+    TIMEOUT_MS,
     parseDedupedFindings,
   );
 
@@ -109,7 +109,7 @@ export async function runJudge(
     provider,
     buildJudgeRewriteSystemPrompt(config),
     buildJudgeRewriteUserPrompt(dedupResult.value, pr),
-    config.timeoutMs,
+    TIMEOUT_MS,
     parseJudgeRewriteReview,
   );
 

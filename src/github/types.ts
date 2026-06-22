@@ -23,8 +23,6 @@ export interface PullRequestData {
 }
 
 export interface FetchPROptions {
-  maxDiffSize: number;
   ignorePatterns: string[];
-  maxFileSize: number;
   lastReviewedSha?: string;
 }

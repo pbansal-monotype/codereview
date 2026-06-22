@@ -43,9 +43,7 @@ async function main(): Promise<void> {
 
     core.info('Fetching PR data...');
     const pr = await getPullRequestData(config.githubToken, {
-      maxDiffSize: config.maxDiffSize,
       ignorePatterns: config.ignorePatterns,
-      maxFileSize: config.maxFileSize,
       lastReviewedSha: config.incrementalReview ? lastReviewedSha : undefined,
     });
 
