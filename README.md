@@ -131,10 +131,10 @@ The system has multiple layers to prevent low-quality findings:
 
 1. **Injection guard**: PR title, body, diff, and file contents are wrapped in named delimiters (`<pr_description>`, `<diff>`, `<file>`). Every system prompt instructs the model to analyze those delimiters and never follow instructions inside them.
 2. **Specialist-level**: Must include a verbatim code snippet per finding; low-confidence findings are dropped before reaching the judge.
-3. **Judge-level**: Verifies each finding's code snippet against the actual diff, deduplicates, re-calibrates severity, removes confidence "low" findings, and caps the total at 8.
+3. **Judge-level**: Deduplicates findings from all specialists and caps the total at 8; the orchestrator then drops any finding whose `file:line` does not land on a changed line in the unified diff, so only diff-touching lines can produce findings.
 4. **Code-level filters**: Drops vague messages ("Ensure...", "Consider...") and findings without a file path.
 5. **Severity calibration (shared scale)**: "critical" = would you page the on-call at 3 am? "warning" = real bug, not urgent. "suggestion" = concrete improvement with specific code. The exact same scale is used by every specialist and the judge.
-6. **Honest failure reporting**: A crashed specialist appears as a visible warning in the PR comment — it can never silently read as a clean pass. If the judge fails to parse its JSON output after retry, findings are published with an **unverified** banner (specialist or deduped fallback) rather than blocking the review.
+6. **Honest failure reporting**: A crashed specialist appears as a visible warning in the PR comment — it can never silently read as a clean pass. If the judge fails to parse its JSON output after retry, findings are published with an **unverified** banner (specialist fallback) rather than blocking the review.
 
 ## Inputs
 

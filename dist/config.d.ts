@@ -41,9 +41,6 @@ export declare const MAX_FILE_SIZE = 10000;
 export declare const SEVERITY_RUBRIC = "Severity scale (identical for all agents):\n- \"critical\": would you page the on-call engineer at 3 am? Data loss, auth bypass, crash, secret exposure.\n- \"warning\": real bug but not urgent \u2014 will cause problems but not tonight.\n- \"suggestion\": concrete improvement with specific code; a reasonable engineer would skip it without regret.";
 export declare function getSpecialistJsonInstruction(): string;
 export declare function getJudgeDedupJsonInstruction(): string;
-export declare function getJudgeRewriteJsonInstruction(): string;
-/** @deprecated Use getJudgeRewriteJsonInstruction */
-export declare function getJudgeJsonInstruction(): string;
 export declare function loadConfig(): ReviewConfig;
 /**
  * Back-compat alias — prefer MAX_PROMPT_TOKENS for new code.

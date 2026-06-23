@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import { ReviewConfig, CategoryGuidelines } from '../config';
-import { hasCriticalFindings } from '../findings';
+import { Finding, hasCriticalFindings, StructuredReview } from '../findings';
 import { AIProvider } from '../providers';
 import { PullRequestData } from '../github';
 import { ReviewResult, SpecialistResult } from './types';
@@ -8,6 +8,26 @@ import { CATEGORY_LABELS, buildSharedContext } from './prompts';
 import { runSpecialistAgent } from './specialist';
 import { runJudge } from './judge';
 import { formatReviewMarkdown } from './format';
+import { parseDiffForCommentTargets } from '../context/diff';
+
+function filterFindingsToDiff(structured: StructuredReview, diff: string): StructuredReview {
+  const targets = parseDiffForCommentTargets(diff);
+
+  const filteredFindings = structured.findings.filter((f: Finding) => {
+    // If we don't have precise location info, keep the finding.
+    if (!f.file || typeof f.line !== 'number') return true;
+
+    const fileTargets = targets.get(f.file);
+    if (!fileTargets || fileTargets.size === 0) return false;
+
+    return fileTargets.has(f.line);
+  });
+
+  return {
+    ...structured,
+    findings: filteredFindings,
+  };
+}
 
 export async function runReview(
   provider: AIProvider,
@@ -123,17 +143,10 @@ export async function runReview(
     }
   }
 
-  // Stage 2: Judge — deduplicate then rewrite (two agent calls).
-  // Parse failures fall back to unverified specialist/deduped findings inside runJudge.
-  const judgeResult = await runJudge(
-    provider,
-    specialistResults,
-    pr,
-    config,
-    sharedContext,
-    categoryIds,
-  );
-  const structured = judgeResult.structured;
+  // Stage 2: Judge — deduplicate findings (single agent call).
+  // Parse failures fall back to unverified specialist findings inside runJudge.
+  const judgeResult = await runJudge(provider, specialistResults, config);
+  const structured = filterFindingsToDiff(judgeResult.structured, pr.diff);
   const judgeTokens = judgeResult.tokens;
 
   core.info(`[judge] Final approved findings: ${structured.findings.length}`);
@@ -151,7 +164,7 @@ export async function runReview(
   const totalOutput =
     specialistResults.reduce((sum, r) => sum + r.tokens.output, 0) +
     judgeTokens.output;
-  const apiCalls = activeCategories.length + 2;
+  const apiCalls = activeCategories.length + 1;
 
   const markdown = formatReviewMarkdown({
     structured,

@@ -17,8 +17,6 @@ export interface StructuredReview {
   findings: Finding[];
   /** True when the judge output was degraded (e.g. parse failure fallback) and findings have not been verified. */
   unverified?: boolean;
-  /** Which judge stage failed when unverified is true. */
-  unverifiedStage?: 'dedup' | 'rewrite';
 }
 
 const VALID_SEVERITIES = new Set<string>(['critical', 'warning', 'suggestion']);
@@ -121,60 +119,26 @@ export function parseStructuredReview(
   };
 }
 
-/** Parse judge rewrite output — preserve every finding, no cap or quality filtering. */
-export function parseJudgeRewriteReview(raw: string): StructuredReview {
-  return parseStructuredReview(raw, {
-    capFindings: false,
-    filterVague: false,
-    filterLowConfidence: false,
-  });
+function buildFindingSummary(findings: Finding[]): string {
+  if (findings.length === 0) return 'No issues found.';
+
+  const counts = { critical: 0, warning: 0, suggestion: 0 };
+  for (const f of findings) counts[f.severity]++;
+
+  const parts: string[] = [];
+  if (counts.critical) parts.push(`${counts.critical} critical`);
+  if (counts.warning) parts.push(`${counts.warning} warning`);
+  if (counts.suggestion) parts.push(`${counts.suggestion} suggestion`);
+
+  return `Review found ${findings.length} issue(s): ${parts.join(', ')}.`;
 }
 
-function findingMatchKeys(f: Finding): string[] {
-  const keys = [`${f.category}\0${f.file}\0${String(f.line ?? '')}`];
-  if (f.codeSnippet) {
-    keys.push(`${f.category}\0${f.file}\0${f.codeSnippet.trim()}`);
-  }
-  return keys;
-}
-
-/**
- * Apply rewritten messages onto the deduped input list.
- * Input count is the source of truth — unmatched findings keep their original message.
- */
-export function reconcileRewrittenFindings(
-  input: Finding[],
-  rewritten: StructuredReview,
-): StructuredReview {
-  const available = [...rewritten.findings];
-  const used = new Set<number>();
-
-  const findMatchIndex = (original: Finding): number => {
-    for (const key of findingMatchKeys(original)) {
-      const idx = available.findIndex(
-        (candidate, i) => !used.has(i) && findingMatchKeys(candidate).includes(key),
-      );
-      if (idx !== -1) return idx;
-    }
-    return available.findIndex(
-      (candidate, i) =>
-        !used.has(i) &&
-        candidate.category === original.category &&
-        candidate.file === original.file &&
-        candidate.line === original.line,
-    );
-  };
-
-  const merged = input.map((original) => {
-    const idx = findMatchIndex(original);
-    if (idx === -1) return original;
-    used.add(idx);
-    return { ...original, message: available[idx].message };
-  });
-
+/** Build the final review from deduplicated judge output. */
+export function buildJudgeReviewFromDedup(findings: Finding[]): StructuredReview {
+  const capped = sortFindingsForReview(findings).slice(0, MAX_FINDINGS);
   return {
-    summary: rewritten.summary,
-    findings: sortFindingsForReview(merged),
+    summary: buildFindingSummary(capped),
+    findings: capped,
   };
 }
 
@@ -302,27 +266,19 @@ export function mechanicalDedup(findings: Finding[]): Finding[] {
   return sortFindingsForReview([...seen.values()]);
 }
 
-/** Build a degraded review when a judge stage fails to parse after retry. */
+/** Build a degraded review when the judge fails to parse after retry. */
 export function buildUnverifiedFallback(
   findings: Finding[],
-  stage: 'dedup' | 'rewrite',
   reason: string,
 ): StructuredReview {
-  const capped =
-    stage === 'dedup'
-      ? mechanicalDedup(findings).slice(0, MAX_FINDINGS)
-      : sortFindingsForReview(findings).slice(0, MAX_FINDINGS);
-
-  const summary =
-    stage === 'dedup'
-      ? `Review completed with degraded judge output (dedup failed: ${reason}). Findings below are from specialist agents and may include duplicates.`
-      : `Review completed with degraded judge output (rewrite failed: ${reason}). Findings were deduplicated but messages were not rewritten.`;
+  const capped = mechanicalDedup(findings).slice(0, MAX_FINDINGS);
 
   return {
-    summary,
+    summary:
+      `Review completed with degraded judge output (dedup failed: ${reason}). ` +
+      `Findings below are from specialist agents and may include duplicates.`,
     findings: capped,
     unverified: true,
-    unverifiedStage: stage,
   };
 }
 

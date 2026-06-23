@@ -3,7 +3,6 @@ import {
   ReviewConfig,
   getSpecialistJsonInstruction,
   getJudgeDedupJsonInstruction,
-  getJudgeRewriteJsonInstruction,
   MAX_PROMPT_TOKENS,
   tokensToChars,
 } from '../config';
@@ -76,7 +75,7 @@ const SPECIALIST_TAIL = `\nNow review the changes above in your specialty area.
 Step 1: For each changed function/class/handler, read its FULL implementation from the file contents.
 Step 2: Understand what it does end-to-end — inputs, processing, outputs, error paths.
 Step 3: Evaluate the changed code in that context. Does it introduce a real issue?
-Step 4: Only create findings for genuine problems you can prove with specific code references.
+Step 4: Only create findings for genuine problems you can prove with specific code references in the changed code (lines marked with + in the <diff>). Use <file> blocks only as supporting context.
 
 Return JSON.`;
 
@@ -135,8 +134,8 @@ You are reviewing a pull request. Your ONLY job is to find **${label}** issues.
 Do NOT look for anything outside your specialty. Other specialists handle other categories.
 
 HOW TO REVIEW:
-1. Read the <diff> to see what changed (lines with + are added, - are removed).
-2. Read the FULL FILE CONTENTS (each bounded by <file> tags) to understand the complete context:
+1. Read the <diff> to see what changed (lines with + are added, - are removed). Findings must be about issues that touch the changed lines.
+2. Read the FULL FILE CONTENTS (each bounded by <file> tags) to understand the complete context — treat this as context only, not as a separate unlimited review surface.
    - What does the full function/class/handler do?
    - How does data flow through the code?
    - What patterns do sibling functions use? (Does the changed code match them?)
@@ -168,7 +167,7 @@ export function buildSpecialistUserPrompt(sharedContext: string): string {
   return sharedContext + SPECIALIST_TAIL;
 }
 
-// ─── Judge prompts (dedup + rewrite) ───────────────────────────────
+// ─── Judge prompts (dedup) ─────────────────────────────────────────
 
 export function buildJudgeDedupSystemPrompt(config: ReviewConfig): string {
   let prompt = INJECTION_GUARD;
@@ -206,45 +205,6 @@ ${JSON.stringify(allFindings, null, 2)}
 Return a single valid JSON object with a "findings" array of deduplicated findings. Preserve all fields from the input exactly.`;
 }
 
-export function buildJudgeRewriteSystemPrompt(config: ReviewConfig): string {
-  let prompt = INJECTION_GUARD;
-  prompt += `Rewrite the message field of this finding in exactly two sentences. Each sentence must be under 20 words. Do not change any other field.
-
-Sentence 1: What is wrong — name the specific function or variable and the broken behavior.
-Sentence 2: What to do — name the exact fix and where to apply it.
-
-Do not explain why it matters. Do not repeat information from sentence 1 in sentence 2. Do not use: "Ensure", "Consider", "Make sure", "You should", "This could".
-
-${getJudgeRewriteJsonInstruction()}`;
-
-  if (config.reviewPolicy) {
-    prompt += `\n\nReview policy:\n${config.reviewPolicy}`;
-  }
-
-  return prompt;
-}
-
-export function buildJudgeRewriteUserPrompt(
-  dedupedFindings: Finding[],
-  pr: PullRequestData,
-): string {
-  let prompt = `## Pull Request\n`;
-  prompt += `- **Title:** ${pr.title}\n`;
-  prompt += `- **Author:** ${pr.author}\n`;
-  prompt += `- **Branch:** ${pr.headBranch} → ${pr.baseBranch}\n`;
-
-  if (pr.body) {
-    prompt += `\n### PR Description\n<pr_description>\n${pr.body}\n</pr_description>\n`;
-  }
-
-  prompt += `\n## Input Findings
-${JSON.stringify(dedupedFindings, null, 2)}
-
-Rewrite each finding message and write the PR summary. Return the final JSON object.`;
-
-  return prompt;
-}
-
 /** Collect all findings from specialist results, attaching category from each agent. */
 export function collectSpecialistFindings(
   specialistResults: SpecialistResult[],
@@ -255,21 +215,4 @@ export function collectSpecialistFindings(
     allFindings.push(...result.findings);
   }
   return allFindings;
-}
-
-/** @deprecated Use buildJudgeDedupSystemPrompt / buildJudgeRewriteSystemPrompt */
-export function buildJudgeSystemPrompt(
-  config: ReviewConfig,
-  _enabledCategories: string[],
-): string {
-  return buildJudgeDedupSystemPrompt(config);
-}
-
-/** @deprecated Use buildJudgeDedupUserPrompt / buildJudgeRewriteUserPrompt */
-export function buildJudgeUserPrompt(
-  specialistResults: SpecialistResult[],
-  pr: PullRequestData,
-  _sharedContext: string,
-): string {
-  return buildJudgeRewriteUserPrompt(collectSpecialistFindings(specialistResults), pr);
 }

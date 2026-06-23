@@ -15,8 +15,6 @@ export interface StructuredReview {
     findings: Finding[];
     /** True when the judge output was degraded (e.g. parse failure fallback) and findings have not been verified. */
     unverified?: boolean;
-    /** Which judge stage failed when unverified is true. */
-    unverifiedStage?: 'dedup' | 'rewrite';
 }
 export interface ParseStructuredReviewOptions {
     /** When true (default), return at most MAX_FINDINGS after sorting. */
@@ -27,13 +25,8 @@ export interface ParseStructuredReviewOptions {
     filterLowConfidence?: boolean;
 }
 export declare function parseStructuredReview(raw: string, options?: ParseStructuredReviewOptions): StructuredReview;
-/** Parse judge rewrite output — preserve every finding, no cap or quality filtering. */
-export declare function parseJudgeRewriteReview(raw: string): StructuredReview;
-/**
- * Apply rewritten messages onto the deduped input list.
- * Input count is the source of truth — unmatched findings keep their original message.
- */
-export declare function reconcileRewrittenFindings(input: Finding[], rewritten: StructuredReview): StructuredReview;
+/** Build the final review from deduplicated judge output. */
+export declare function buildJudgeReviewFromDedup(findings: Finding[]): StructuredReview;
 /**
  * Parse output from a specialist agent where category is known externally.
  * Simpler schema: { findings: [{ severity, confidence, file, line, message }] }
@@ -48,8 +41,8 @@ export declare function sortFindingsForReview(findings: Finding[]): Finding[];
 export declare function parseDedupedFindings(raw: string): Finding[];
 /** Merge findings by category + file + line, keeping the highest-severity entry. */
 export declare function mechanicalDedup(findings: Finding[]): Finding[];
-/** Build a degraded review when a judge stage fails to parse after retry. */
-export declare function buildUnverifiedFallback(findings: Finding[], stage: 'dedup' | 'rewrite', reason: string): StructuredReview;
+/** Build a degraded review when the judge fails to parse after retry. */
+export declare function buildUnverifiedFallback(findings: Finding[], reason: string): StructuredReview;
 /**
  * Salvage complete finding objects from truncated judge JSON
  * (e.g. output cut off mid-array or mid-object).

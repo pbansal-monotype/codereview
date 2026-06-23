@@ -1,20 +1,16 @@
 import * as core from '@actions/core';
 import { ReviewConfig, TIMEOUT_MS } from '../config';
 import {
-  parseJudgeRewriteReview,
   parseDedupedFindings,
-  reconcileRewrittenFindings,
   buildUnverifiedFallback,
+  buildJudgeReviewFromDedup,
   StructuredReview,
 } from '../findings';
 import { AIProvider } from '../providers';
-import { PullRequestData } from '../github';
 import { SpecialistResult, TokenUsage } from './types';
 import {
   buildJudgeDedupSystemPrompt,
   buildJudgeDedupUserPrompt,
-  buildJudgeRewriteSystemPrompt,
-  buildJudgeRewriteUserPrompt,
   collectSpecialistFindings,
 } from './prompts';
 
@@ -106,10 +102,7 @@ async function callWithParseRetry<T>(
 export async function runJudge(
   provider: AIProvider,
   specialistResults: SpecialistResult[],
-  pr: PullRequestData,
   config: ReviewConfig,
-  _sharedContext: string,
-  _enabledCategories: string[],
 ): Promise<JudgeResult> {
   const allFindings = collectSpecialistFindings(specialistResults);
 
@@ -124,71 +117,25 @@ export async function runJudge(
     parseDedupedFindings,
   );
 
-  let dedupFindings;
-  let inputTokens = dedupOutcome.inputTokens;
-  let outputTokens = dedupOutcome.outputTokens;
+  const inputTokens = dedupOutcome.inputTokens;
+  const outputTokens = dedupOutcome.outputTokens;
   let structured: StructuredReview;
 
   if (!dedupOutcome.ok) {
     core.warning(
       `[judge/dedup] Parse failure — publishing unverified specialist findings (${dedupOutcome.reason})`,
     );
-    structured = buildUnverifiedFallback(allFindings, 'dedup', dedupOutcome.reason);
-    return {
-      structured,
-      tokens: { input: inputTokens, output: outputTokens },
-    };
-  }
-
-  dedupFindings = dedupOutcome.value;
-  core.info(
-    `[judge/dedup] ${dedupFindings.length} finding(s) after dedup (${dedupOutcome.tokensUsed} tokens)`,
-  );
-
-  core.info('[judge/rewrite] Rewriting finding messages and writing summary...');
-
-  const rewriteOutcome = await callWithParseRetry(
-    'judge/rewrite',
-    provider,
-    buildJudgeRewriteSystemPrompt(config),
-    buildJudgeRewriteUserPrompt(dedupFindings, pr),
-    TIMEOUT_MS,
-    parseJudgeRewriteReview,
-  );
-
-  inputTokens += rewriteOutcome.inputTokens;
-  outputTokens += rewriteOutcome.outputTokens;
-
-  if (!rewriteOutcome.ok) {
-    core.warning(
-      `[judge/rewrite] Parse failure — publishing deduped findings without rewrite (${rewriteOutcome.reason})`,
+    structured = buildUnverifiedFallback(allFindings, dedupOutcome.reason);
+  } else {
+    const dedupFindings = dedupOutcome.value;
+    core.info(
+      `[judge/dedup] ${dedupFindings.length} finding(s) after dedup (${dedupOutcome.tokensUsed} tokens)`,
     );
-    structured = buildUnverifiedFallback(dedupFindings, 'rewrite', rewriteOutcome.reason);
-    return {
-      structured,
-      tokens: { input: inputTokens, output: outputTokens },
-    };
-  }
-
-  const parsedRewrite = rewriteOutcome.value;
-
-  if (parsedRewrite.findings.length < dedupFindings.length) {
-    core.warning(
-      `[judge/rewrite] Rewrite returned ${parsedRewrite.findings.length}/${dedupFindings.length} finding(s) — restoring missing findings with original messages`,
+    structured = buildJudgeReviewFromDedup(dedupFindings);
+    core.info(
+      `[judge/dedup] Final output: ${structured.findings.length} finding(s) (${inputTokens + outputTokens} total judge tokens)`,
     );
   }
-
-  structured = reconcileRewrittenFindings(dedupFindings, parsedRewrite);
-
-  if (structured.findings.length !== dedupFindings.length) {
-    core.error(
-      `[judge/rewrite] Finding count mismatch after reconcile: ${structured.findings.length} vs ${dedupFindings.length}`,
-    );
-  }
-
-  core.info(
-    `[judge/rewrite] Final output: ${structured.findings.length} finding(s) (${rewriteOutcome.tokensUsed} tokens; ${inputTokens + outputTokens} total judge tokens)`,
-  );
 
   return {
     structured,

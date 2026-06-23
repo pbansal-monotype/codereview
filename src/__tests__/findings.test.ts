@@ -7,11 +7,10 @@ import {
   hasCriticalFindings,
   extractJson,
   sortFindingsForReview,
-  parseJudgeRewriteReview,
-  reconcileRewrittenFindings,
   salvageTruncatedFindingsJson,
   mechanicalDedup,
   buildUnverifiedFallback,
+  buildJudgeReviewFromDedup,
 } from '../findings';
 
 describe('parseStructuredReview', () => {
@@ -255,61 +254,19 @@ describe('sortFindingsForReview', () => {
   });
 });
 
-describe('parseJudgeRewriteReview', () => {
-  it('returns all findings without capping', () => {
+describe('buildJudgeReviewFromDedup', () => {
+  it('caps and summarizes deduped findings', () => {
     const findings = Array.from({ length: 12 }, (_, i) => ({
       category: 'code',
-      severity: 'warning',
-      confidence: 'high',
+      severity: (i === 0 ? 'critical' : 'warning') as 'critical' | 'warning',
+      confidence: 'high' as const,
       file: `src/file${i}.ts`,
       line: i + 1,
-      message: `Rewritten message ${i}. Failure mode ${i}. Fix ${i}.`,
+      message: `Issue ${i}`,
     }));
-    const review = parseJudgeRewriteReview(
-      JSON.stringify({ summary: 'Summary text.', findings }),
-    );
-    assert.equal(review.findings.length, 12);
-  });
-});
-
-describe('reconcileRewrittenFindings', () => {
-  it('preserves input count when rewrite omits findings', () => {
-    const input = [
-      {
-        category: 'security',
-        severity: 'critical' as const,
-        confidence: 'high' as const,
-        file: 'src/a.ts',
-        line: 1,
-        message: 'original one',
-      },
-      {
-        category: 'code',
-        severity: 'warning' as const,
-        confidence: 'medium' as const,
-        file: 'src/b.ts',
-        line: 2,
-        message: 'original two',
-      },
-    ];
-    const rewritten = {
-      summary: 'PR summary.',
-      findings: [
-        {
-          category: 'security',
-          severity: 'critical' as const,
-          confidence: 'high' as const,
-          file: 'src/a.ts',
-          line: 1,
-          message: 'rewritten one',
-        },
-      ],
-    };
-    const result = reconcileRewrittenFindings(input, rewritten);
-    assert.equal(result.findings.length, 2);
-    assert.equal(result.findings[0].message, 'rewritten one');
-    assert.equal(result.findings[1].message, 'original two');
-    assert.equal(result.summary, 'PR summary.');
+    const review = buildJudgeReviewFromDedup(findings);
+    assert.equal(review.findings.length, 8);
+    assert.match(review.summary, /8 issue\(s\): 1 critical, 7 warning/);
   });
 });
 
@@ -422,7 +379,7 @@ describe('salvageTruncatedFindingsJson', () => {
   it('parses prose-wrapped JSON via salvage path', () => {
     const raw =
       'Sure! Here is the JSON:\n```json\n{"summary":"ok","findings":[{"category":"security","severity":"warning","confidence":"high","file":"src/x.ts","line":3,"message":"msg"}]}\n```\nHope that helps!';
-    const review = parseJudgeRewriteReview(raw);
+    const review = parseStructuredReview(raw);
     assert.equal(review.findings.length, 1);
     assert.equal(review.summary, 'ok');
   });
@@ -440,28 +397,14 @@ describe('mechanicalDedup', () => {
 });
 
 describe('buildUnverifiedFallback', () => {
-  it('marks dedup fallback as unverified with stage dedup', () => {
+  it('marks dedup fallback as unverified', () => {
     const review = buildUnverifiedFallback(
       [
         { category: 'code', severity: 'warning', confidence: 'high', file: 'src/a.ts', line: 1, message: 'a' },
       ],
-      'dedup',
       'parse error',
     );
     assert.equal(review.unverified, true);
-    assert.equal(review.unverifiedStage, 'dedup');
     assert.match(review.summary, /dedup failed/i);
-  });
-
-  it('marks rewrite fallback as unverified with stage rewrite', () => {
-    const review = buildUnverifiedFallback(
-      [
-        { category: 'code', severity: 'warning', confidence: 'high', file: 'src/a.ts', line: 1, message: 'a' },
-      ],
-      'rewrite',
-      'parse error',
-    );
-    assert.equal(review.unverifiedStage, 'rewrite');
-    assert.match(review.summary, /rewrite failed/i);
   });
 });

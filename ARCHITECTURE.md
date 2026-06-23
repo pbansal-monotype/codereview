@@ -9,10 +9,10 @@ A TypeScript GitHub Action that automates pull request code review using a multi
 | Metric | Value |
 |--------|-------|
 | Specialist Agents | 5 (security, tests, performance, code, custom) |
-| Judge Stages | 2 (dedup + rewrite) |
+| Judge Stages | 1 (dedup) |
 | Token Budget | ~75k tokens (~300k chars) |
 | Max Findings | 8 per review |
-| LLM Calls per PR | up to 7 (5 specialists + 2 judge) |
+| LLM Calls per PR | up to 6 (5 specialists + 1 judge) |
 
 ---
 
@@ -45,11 +45,7 @@ A TypeScript GitHub Action that automates pull request code review using a multi
             └──────────┴───────┼───────┴─────────┘
                                ▼
                       ┌────────────────┐
-                      │ Judge: Dedup   │
-                      └───────┬────────┘
-                              ▼
-                      ┌────────────────┐
-                      │ Judge: Rewrite │
+                      │  Judge: Dedup  │
                       └───────┬────────┘
                               ▼
                       ┌────────────────┐
@@ -93,8 +89,7 @@ A TypeScript GitHub Action that automates pull request code review using a multi
    │
    ├── Stage 2: runJudge()
    │     ├── collectSpecialistFindings()
-   │     ├── judge/dedup LLM call   → parseDedupedFindings()
-   │     └── judge/rewrite LLM call → parseJudgeRewriteReview() → reconcileRewrittenFindings()
+   │     └── judge/dedup LLM call   → parseDedupedFindings() → buildJudgeReviewFromDedup()
    │
    └── formatReviewMarkdown()
    │
@@ -128,7 +123,7 @@ PR Review/
 │   ├── agents/
 │   │   ├── orchestrator.ts       # Fan-out to specialists → judge → format
 │   │   ├── specialist.ts         # One LLM call per domain category
-│   │   ├── judge.ts              # Two-stage: dedup findings, then rewrite + summarize
+│   │   ├── judge.ts              # Dedup findings and cap output
 │   │   ├── prompts.ts            # System/user prompt builders with injection guards
 │   │   ├── format.ts             # Renders final PR comment markdown
 │   │   └── guidelines/           # Built-in review rules per category
@@ -160,7 +155,7 @@ PR Review/
 | **Config** | `src/config.ts` | Resolves action inputs, env vars, defaults; JSON schema + severity rubric |
 | **Orchestrator** | `src/agents/orchestrator.ts` | Fan-out to specialists, collect results, run judge, format output |
 | **Specialist** | `src/agents/specialist.ts` | One LLM call per domain category; parses JSON findings |
-| **Judge** | `src/agents/judge.ts` | Two-stage: deduplicate findings, then rewrite messages + summary |
+| **Judge** | `src/agents/judge.ts` | Deduplicate specialist findings and cap at 8 |
 | **Prompts** | `src/agents/prompts.ts` | System/user prompt builders with injection guards |
 | **Format** | `src/agents/format.ts` | Renders final PR markdown (findings, failures, cost stats) |
 | **PR Data** | `src/github/pr-data.ts` | Fetches PR metadata, diff, changed files; filters ignored paths |
@@ -195,12 +190,11 @@ Each specialist receives:
 - A **system prompt** with role definition, domain-specific guidelines, injection guard, and JSON output schema
 - A **user prompt** with PR metadata + risk-scored context + review instructions
 
-### Judge (Stage 2 — Sequential)
+### Judge (Stage 2)
 
-Two sequential LLM calls consolidate specialist output:
+A single LLM call consolidates specialist output:
 
-1. **Dedup** — Merges true duplicates across specialists while preserving all fields
-2. **Rewrite** — Tightens finding messages, writes PR summary, reconciles onto deduped list
+1. **Dedup** — Merges true duplicates across specialists while preserving all fields, then caps at 8 findings
 
 ---
 
@@ -260,7 +254,9 @@ All providers go through `withRetry()` — 3 attempts, exponential backoff, conf
 | **Secret Redaction** | Secrets are stripped from diffs and file contents before sending to LLMs (`redact.ts`) |
 | **Injection Guards** | Untrusted PR content wrapped in `<pr_description>`, `<diff>`, `<file>` delimiters |
 | **Error Sanitization** | API keys stripped from failure messages in logs (`sanitize.ts`) |
-| **Fail-Closed Judge** | If judge parsing fails after retry, PR is treated as having critical issues |
+| **Degraded Judge Fallback** | If judge JSON parsing fails after retry, specialist findings are published with an unverified banner; `fail_on_critical` only applies to actual critical findings present in the output, never to the parse failure itself |
+| **Infra Failure Handling** | If the judge API call itself fails (timeout, 5xx, auth error) after exhausting retries, the action fails closed — this is independent of JSON-parsing outcome |
+| **Diff-Anchored Findings** | After judge dedup, the orchestrator drops any finding with a `file:line` that does not land on a changed line in the unified diff; only diff-touching lines can produce findings or inline comments |
 
 ---
 
@@ -269,9 +265,9 @@ All providers go through `withRetry()` — 3 attempts, exponential backoff, conf
 ```
 Specialist raw JSON
   → filter low confidence, vague messages, missing file/snippet
-    → Judge dedup: preserve fields, merge true duplicates
-      → Judge rewrite: tighten messages, write summary, reconcile
-        → Final StructuredReview: max 8 findings (critical > warning > suggestion)
+    → Judge dedup: preserve fields, merge true duplicates, cap at 8
+      → Orchestrator filters findings to lines that appear in the diff (per file + line mapping)
+        → Final StructuredReview (critical > warning > suggestion)
           → Posted as summary comment + inline comments
 ```
 
@@ -297,9 +293,9 @@ Specialist raw JSON
 1. **Multi-agent over monolith** — Parallel domain experts plus a judge for quality control, rather than a single monolithic prompt
 2. **Context over diff-only** — Full file contents for high-risk files so reviewers see complete functions/APIs
 3. **Budget-aware context** — Risk scoring prevents blowing token limits on large PRs
-4. **Quality gates at multiple layers** — Injection guards, specialist filters, judge dedup/rewrite, vague-message regex filters, 8-finding cap
+4. **Quality gates at multiple layers** — Injection guards, specialist filters, judge dedup, diff-anchoring of findings, vague-message regex filters, 8-finding cap
 5. **Resilient fan-out** — `Promise.allSettled` so one crashed specialist doesn't kill the pipeline; failures surfaced in PR comment
-6. **Degraded judge fallback** — If judge JSON parsing fails after retry, specialist or deduped findings are published with an unverified banner; API/infrastructure failures still fail the action
+6. **Degraded judge fallback** — If judge JSON parsing fails after retry, specialist findings are published with an unverified banner; API/infrastructure failures still fail the action
 7. **Single-file distribution** — `ncc` bundle makes the action self-contained with no runtime `npm install`
 8. **Incremental review via persisted state** — `last_reviewed_sha` is stored per PR (via comment marker or GitHub Gist) to diff only new changes on `synchronize` events, preventing the infinite-findings loop
 

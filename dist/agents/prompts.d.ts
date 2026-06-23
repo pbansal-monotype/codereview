@@ -18,12 +18,6 @@ export declare function buildSpecialistSystemPrompt(categoryId: string, guidelin
 export declare function buildSpecialistUserPrompt(sharedContext: string): string;
 export declare function buildJudgeDedupSystemPrompt(config: ReviewConfig): string;
 export declare function buildJudgeDedupUserPrompt(allFindings: Finding[]): string;
-export declare function buildJudgeRewriteSystemPrompt(config: ReviewConfig): string;
-export declare function buildJudgeRewriteUserPrompt(dedupedFindings: Finding[], pr: PullRequestData): string;
 /** Collect all findings from specialist results, attaching category from each agent. */
 export declare function collectSpecialistFindings(specialistResults: SpecialistResult[]): Finding[];
-/** @deprecated Use buildJudgeDedupSystemPrompt / buildJudgeRewriteSystemPrompt */
-export declare function buildJudgeSystemPrompt(config: ReviewConfig, _enabledCategories: string[]): string;
-/** @deprecated Use buildJudgeDedupUserPrompt / buildJudgeRewriteUserPrompt */
-export declare function buildJudgeUserPrompt(specialistResults: SpecialistResult[], pr: PullRequestData, _sharedContext: string): string;
 //# sourceMappingURL=prompts.d.ts.map

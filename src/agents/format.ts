@@ -18,14 +18,6 @@ interface FormatOptions {
 function unverifiedBanner(structured: StructuredReview): string {
   if (!structured.unverified) return '';
 
-  if (structured.unverifiedStage === 'rewrite') {
-    return (
-      `\n> ⚠️ **Judge output is unverified** — the rewrite stage failed to parse. ` +
-      `Findings below were deduplicated but messages were not rewritten. ` +
-      `Review manually before acting on these.\n`
-    );
-  }
-
   return (
     `\n> ⚠️ **Judge output is unverified** — the dedup stage failed to parse. ` +
     `Findings below are raw specialist output and may include duplicates. ` +
@@ -39,7 +31,7 @@ export function formatReviewMarkdown(opts: FormatOptions): string {
   let md = `# 🤖 AI PR Review\n\n`;
   md += `**PR:** #${pr.number} — ${pr.title}\n`;
   md += `**Provider:** ${config.provider} (${config.model})\n`;
-  md += `**Mode:** Multi-agent (${apiCalls - 2} specialists + dedup + rewrite judges)\n`;
+  md += `**Mode:** Multi-agent (${apiCalls - 1} specialists + dedup judge)\n`;
   md += `**Files reviewed:** ${pr.reviewedFiles.length} / ${pr.changedFiles.length} changed\n`;
 
   if (pr.redactionCount > 0) {
@@ -97,7 +89,7 @@ export function formatReviewMarkdown(opts: FormatOptions): string {
   md += `\n---\n\n`;
   md += `<details>\n<summary>📊 Review Stats</summary>\n\n`;
   md += `- Categories: ${categories.map((id) => CATEGORY_LABELS[id] || id).join(', ')}\n`;
-  md += `- API calls: ${apiCalls} (${apiCalls - 2} specialist + 2 judge)\n`;
+  md += `- API calls: ${apiCalls} (${apiCalls - 1} specialist + 1 judge)\n`;
   md += `- Tokens: ${totalTokens.input.toLocaleString()} input + ${totalTokens.output.toLocaleString()} output = ${(totalTokens.input + totalTokens.output).toLocaleString()} total\n`;
 
   const cost = estimateCost(
