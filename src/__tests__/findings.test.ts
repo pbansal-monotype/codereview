@@ -117,7 +117,7 @@ describe('parseStructuredReview', () => {
     assert.equal(result.findings[0].file, 'src/api.ts');
   });
 
-  it('caps findings at 8 by default and prioritises by severity', () => {
+  it('does not cap findings by default and prioritises by severity', () => {
     const findings = [];
     for (let i = 0; i < 12; i++) {
       findings.push({
@@ -130,7 +130,7 @@ describe('parseStructuredReview', () => {
       });
     }
     const result = parseStructuredReview(JSON.stringify({ summary: 'many issues', findings }));
-    assert.ok(result.findings.length <= 8);
+    assert.equal(result.findings.length, 12);
     assert.equal(result.findings[0].severity, 'critical');
     assert.equal(result.findings[1].severity, 'critical');
   });
@@ -255,7 +255,7 @@ describe('sortFindingsForReview', () => {
 });
 
 describe('buildJudgeReviewFromDedup', () => {
-  it('caps and summarizes deduped findings', () => {
+  it('summarizes all deduped findings without capping', () => {
     const findings = Array.from({ length: 12 }, (_, i) => ({
       category: 'code',
       severity: (i === 0 ? 'critical' : 'warning') as 'critical' | 'warning',
@@ -265,8 +265,8 @@ describe('buildJudgeReviewFromDedup', () => {
       message: `Issue ${i}`,
     }));
     const review = buildJudgeReviewFromDedup(findings);
-    assert.equal(review.findings.length, 8);
-    assert.match(review.summary, /8 issue\(s\): 1 critical, 7 warning/);
+    assert.equal(review.findings.length, 12);
+    assert.match(review.summary, /12 issue\(s\): 1 critical, 11 warning/);
   });
 });
 

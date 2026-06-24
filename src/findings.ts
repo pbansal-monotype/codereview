@@ -22,10 +22,10 @@ export interface StructuredReview {
 const VALID_SEVERITIES = new Set<string>(['critical', 'warning', 'suggestion']);
 const VALID_CONFIDENCES = new Set<string>(['high', 'medium', 'low']);
 
-const MAX_FINDINGS = 8;
-
 export interface ParseStructuredReviewOptions {
-  /** When true (default), return at most MAX_FINDINGS after sorting. */
+  /**
+   * @deprecated Findings are no longer capped; this option is ignored.
+   */
   capFindings?: boolean;
   /** When true (default), drop findings with vague phrasing. */
   filterVague?: boolean;
@@ -70,7 +70,7 @@ export function parseStructuredReview(
   options: ParseStructuredReviewOptions = {},
 ): StructuredReview {
   const {
-    capFindings = true,
+    capFindings: _capFindings = true,
     filterVague = true,
     filterLowConfidence = true,
   } = options;
@@ -115,7 +115,7 @@ export function parseStructuredReview(
 
   return {
     summary,
-    findings: capFindings ? sorted.slice(0, MAX_FINDINGS) : sorted,
+    findings: sorted,
   };
 }
 
@@ -135,10 +135,10 @@ function buildFindingSummary(findings: Finding[]): string {
 
 /** Build the final review from deduplicated judge output. */
 export function buildJudgeReviewFromDedup(findings: Finding[]): StructuredReview {
-  const capped = sortFindingsForReview(findings).slice(0, MAX_FINDINGS);
+  const sorted = sortFindingsForReview(findings);
   return {
-    summary: buildFindingSummary(capped),
-    findings: capped,
+    summary: buildFindingSummary(sorted),
+    findings: sorted,
   };
 }
 
@@ -271,13 +271,13 @@ export function buildUnverifiedFallback(
   findings: Finding[],
   reason: string,
 ): StructuredReview {
-  const capped = mechanicalDedup(findings).slice(0, MAX_FINDINGS);
+  const deduped = mechanicalDedup(findings);
 
   return {
     summary:
       `Review completed with degraded judge output (dedup failed: ${reason}). ` +
       `Findings below are from specialist agents and may include duplicates.`,
-    findings: capped,
+    findings: deduped,
     unverified: true,
   };
 }
