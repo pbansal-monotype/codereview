@@ -7,12 +7,8 @@ export declare function buildPrMetadata(pr: PullRequestData, config: ReviewConfi
 /**
  * Builds the shared context — PR metadata, then the risk-scored file sections
  * (each containing the diff hunk and, for high-risk files, the full file content).
- *
- * @param prioritizeTests  When true (tests specialist), test-file scores are boosted
- *   so they receive high-priority treatment. When false (all other specialists),
- *   test files fall below the medium-risk threshold and are skipped entirely.
  */
-export declare function buildSharedContext(pr: PullRequestData, config: ReviewConfig, prioritizeTests?: boolean): string;
+export declare function buildSharedContext(pr: PullRequestData, config: ReviewConfig): string;
 export declare function buildSpecialistSystemPrompt(categoryId: string, guidelines: string, config: ReviewConfig): string;
 /** Appends the specialist review instruction to the shared context. */
 export declare function buildSpecialistUserPrompt(sharedContext: string): string;

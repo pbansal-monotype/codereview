@@ -17,7 +17,9 @@ export interface StructuredReview {
     unverified?: boolean;
 }
 export interface ParseStructuredReviewOptions {
-    /** When true (default), return at most MAX_FINDINGS after sorting. */
+    /**
+     * @deprecated Findings are no longer capped; this option is ignored.
+     */
     capFindings?: boolean;
     /** When true (default), drop findings with vague phrasing. */
     filterVague?: boolean;

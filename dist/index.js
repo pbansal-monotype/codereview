@@ -34042,7 +34042,7 @@ exports.implementation = class URLImpl {
 
 /***/ }),
 
-/***/ 6633:
+/***/ 9014:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 "use strict";
@@ -34252,7 +34252,7 @@ module.exports = {
 "use strict";
 
 
-exports.URL = __nccwpck_require__(6633)["interface"];
+exports.URL = __nccwpck_require__(9014)["interface"];
 exports.serializeURL = __nccwpck_require__(905).serializeURL;
 exports.serializeURLOrigin = __nccwpck_require__(905).serializeURLOrigin;
 exports.basicURLParse = __nccwpck_require__(905).basicURLParse;
@@ -35729,74 +35729,6 @@ function formatReviewMarkdown(opts) {
 
 /***/ }),
 
-/***/ 6835:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.CODE_GUIDELINES = void 0;
-exports.CODE_GUIDELINES = `
-Review the complete function, class, or module being changed. Use file contents to understand the codebase's existing patterns, conventions, and architecture.
-
-WHAT TO LOOK FOR:
-
-1. **Error Handling Gaps**
-   - Read the complete function: are all failure paths handled? Are there try/catch blocks where needed?
-   - Check if the function can throw but callers don't handle it. Trace through the call chain in the file context.
-   - Check if error messages are meaningful (not swallowed silently, not generic "Something went wrong").
-   - Example: "fetchUser() at line 25 can throw on network failure but the caller at line 42 has no try/catch → unhandled rejection will crash the process → wrap in try/catch and return a proper error response"
-
-2. **API Contract & Input Validation**
-   - New endpoints or public functions: do they validate inputs before processing?
-   - Check the full handler: what happens with missing fields, wrong types, empty strings, negative numbers?
-   - Compare with sibling handlers in the file — do they validate? If so, this one should too.
-   - Example: "POST /users handler at line 30 uses req.body.email directly without validation → missing email will cause db.insert to fail with a cryptic error → validate with schema or check presence first"
-
-3. **Resource Cleanup & Lifecycle**
-   - Database connections, file handles, streams, timers opened but never closed.
-   - Check the complete function: is there a finally block or cleanup path?
-   - Example: "db.connect() at line 15 with no corresponding disconnect in finally → connection leak under error conditions → use try/finally or a connection pool"
-
-4. **Inconsistency with Codebase Patterns**
-   - The changed code uses a different pattern than the rest of the file for the same task.
-   - Check sibling functions: if they use a helper, utility, or middleware, the new code should too.
-   - Example: "Sibling routes use validateRequest() middleware (lines 10, 22, 35) but the new route at line 48 does raw validation inline → inconsistent and error-prone → use validateRequest()"
-
-5. **Race Conditions & Concurrency**
-   - Shared state modified without synchronisation in concurrent contexts.
-   - Check-then-act patterns without atomicity (TOCTOU).
-   - Example: "Read balance at line 20, then write updated balance at line 25 without a transaction → concurrent requests can cause double-spending → wrap in a database transaction"
-
-6. **Null/Undefined Safety**
-   - Accessing properties on values that could be null/undefined without checks.
-   - Optional chaining missing where the type allows undefined.
-   - Check the types and upstream data to understand if null is actually possible.
-
-7. **Logic Errors**
-   - Off-by-one errors in loops or slicing.
-   - Wrong comparison operators (= vs ==, < vs <=).
-   - Inverted conditions or missing negation.
-   - Unreachable code after early returns.
-
-HOW TO USE FILE CONTEXT:
-- Read imports to understand what libraries, utilities, and patterns are available
-- Check how sibling functions handle the same concerns (validation, auth, errors)
-- Trace type definitions to understand what can be null/undefined
-- Look at the module's public API to understand the contract
-- Check if there are shared utilities the author should use instead of reimplementing
-
-DO NOT flag:
-- Style preferences (naming, formatting, bracket placement) — linters handle this
-- "Could be refactored" without a concrete bug or correctness issue
-- Missing TypeScript strict mode features unless they cause a real bug
-- Code that works correctly but could be written "more elegantly"
-- TODOs or commented-out code (those are intentional markers)
-`.trim();
-
-
-/***/ }),
-
 /***/ 5428:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
@@ -35805,14 +35737,10 @@ DO NOT flag:
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.DEFAULT_GUIDELINES = void 0;
 const security_1 = __nccwpck_require__(1000);
-const tests_1 = __nccwpck_require__(2097);
 const performance_1 = __nccwpck_require__(9762);
-const code_guidelines_1 = __nccwpck_require__(6835);
 exports.DEFAULT_GUIDELINES = {
     security: security_1.SECURITY_GUIDELINES,
-    tests: tests_1.TESTS_GUIDELINES,
-    performance: performance_1.PERFORMANCE_GUIDELINES,
-    code: code_guidelines_1.CODE_GUIDELINES,
+    code: performance_1.PERFORMANCE_GUIDELINES,
 };
 
 
@@ -35826,9 +35754,11 @@ exports.DEFAULT_GUIDELINES = {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.PERFORMANCE_GUIDELINES = void 0;
 exports.PERFORMANCE_GUIDELINES = `
-Review the complete function or request handler being changed. Use file contents to understand the full execution path — where data comes from, how it's processed, and where it goes.
+Review the complete function, class, or module being changed. Use file contents to understand the full execution path — where data comes from, how it's processed, and where it goes.
 
 WHAT TO LOOK FOR:
+
+## Performance Issues
 
 1. **N+1 Queries / Loop-Bound I/O**
    - Read the complete function to find loops. Check if any I/O operation (database query, API call, file read) happens inside the loop body.
@@ -35858,11 +35788,55 @@ WHAT TO LOOK FOR:
    - New list/search endpoints that could return large result sets.
    - Check the handler's full implementation and the route definition from file context.
 
+## Code Quality & Correctness Issues
+
+7. **Error Handling Gaps**
+   - Read the complete function: are all failure paths handled? Are there try/catch blocks where needed?
+   - Check if the function can throw but callers don't handle it. Trace through the call chain in the file context.
+   - Check if error messages are meaningful (not swallowed silently, not generic "Something went wrong").
+   - Example: "fetchUser() at line 25 can throw on network failure but the caller at line 42 has no try/catch → unhandled rejection will crash the process → wrap in try/catch and return a proper error response"
+
+8. **API Contract & Input Validation**
+   - New endpoints or public functions: do they validate inputs before processing?
+   - Check the full handler: what happens with missing fields, wrong types, empty strings, negative numbers?
+   - Compare with sibling handlers in the file — do they validate? If so, this one should too.
+   - Example: "POST /users handler at line 30 uses req.body.email directly without validation → missing email will cause db.insert to fail with a cryptic error → validate with schema or check presence first"
+
+9. **Resource Cleanup & Lifecycle**
+   - Database connections, file handles, streams, timers opened but never closed.
+   - Check the complete function: is there a finally block or cleanup path?
+   - Example: "db.connect() at line 15 with no corresponding disconnect in finally → connection leak under error conditions → use try/finally or a connection pool"
+
+10. **Race Conditions & Concurrency**
+    - Shared state modified without synchronisation in concurrent contexts.
+    - Check-then-act patterns without atomicity (TOCTOU).
+    - Example: "Read balance at line 20, then write updated balance at line 25 without a transaction → concurrent requests can cause double-spending → wrap in a database transaction"
+
+11. **Null/Undefined Safety**
+    - Accessing properties on values that could be null/undefined without checks.
+    - Optional chaining missing where the type allows undefined.
+    - Check the types and upstream data to understand if null is actually possible.
+
+12. **Logic Errors**
+    - Off-by-one errors in loops or slicing.
+    - Wrong comparison operators (= vs ==, < vs <=).
+    - Inverted conditions or missing negation.
+    - Unreachable code after early returns.
+
+13. **Inconsistency with Codebase Patterns**
+    - The changed code uses a different pattern than the rest of the file for the same task.
+    - Check sibling functions: if they use a helper, utility, or middleware, the new code should too.
+    - Example: "Sibling routes use validateRequest() middleware (lines 10, 22, 35) but the new route at line 48 does raw validation inline → inconsistent and error-prone → use validateRequest()"
+
 HOW TO USE FILE CONTEXT:
 - Check if the function is a request handler (Express, Fastify, Lambda) vs a startup script vs a CLI tool
 - Read the data model/types to understand what N represents and how large it can get
 - Check if there's existing pagination middleware or helpers the author should use
 - Look at how sibling endpoints handle similar patterns (do they paginate? cache? batch?)
+- Read imports to understand what libraries, utilities, and patterns are available
+- Check how sibling functions handle the same concerns (validation, auth, errors)
+- Trace type definitions to understand what can be null/undefined
+- Look at the module's public API to understand the contract
 
 DO NOT flag:
 - Code that runs once at startup or in a build/migration script
@@ -35870,6 +35844,11 @@ DO NOT flag:
 - "Consider caching" without showing what's being redundantly fetched and how often
 - Missing database indexes (you cannot see the schema, query plan, or table size from code)
 - Async/await in non-hot-path code (CLI tools, admin scripts, setup functions)
+- Style preferences (naming, formatting, bracket placement) — linters handle this
+- "Could be refactored" without a concrete bug or correctness issue
+- Missing TypeScript strict mode features unless they cause a real bug
+- Code that works correctly but could be written "more elegantly"
+- TODOs or commented-out code (those are intentional markers)
 `.trim();
 
 
@@ -35933,60 +35912,6 @@ DO NOT flag:
 
 /***/ }),
 
-/***/ 2097:
-/***/ ((__unused_webpack_module, exports) => {
-
-"use strict";
-
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.TESTS_GUIDELINES = void 0;
-exports.TESTS_GUIDELINES = `
-Review the complete function or class being changed, then check if its behaviour is adequately tested.
-Use file contents to understand what the function DOES before evaluating test coverage.
-
-WHAT TO LOOK FOR:
-
-1. **New Functions/Methods Without Tests**
-   - If a new public function, API handler, or exported method is added, check if any test file covers it.
-   - Use the file context to see what the function does. Name the function and describe what test is missing.
-   - Example: "New function \`calculateDiscount()\` at line 15 handles 3 branches (percentage, fixed, BOGO) → only the percentage case is tested → add tests for fixed and BOGO discount types"
-
-2. **Untested Error/Edge-Case Branches**
-   - Read the complete function to identify all branches: if/else, switch cases, try/catch, null checks, empty arrays, boundary values.
-   - For each branch, check if the corresponding test file has a test that exercises it.
-   - Flag specific untested branches: "The catch block at line 28 returns a 500 error with message → no test covers the error path → add a test that triggers the error condition"
-
-3. **Tautological or Meaningless Tests**
-   - A test that asserts what the mock returns (proves nothing about the implementation)
-   - A test with no assertions or only \`expect(result).toBeTruthy()\` on a function that always returns something
-   - A test that catches an error and asserts nothing about it
-
-4. **Flaky Test Patterns**
-   - Timing-dependent assertions (setTimeout, Date.now() comparisons)
-   - Tests that depend on execution order or shared mutable state
-   - Tests that hit real network/filesystem without mocking
-
-5. **Missing Negative Tests**
-   - When a function validates input, check if tests cover invalid input scenarios
-   - When a function has error handling, check if tests trigger those error paths
-
-HOW TO USE FILE CONTEXT:
-- Read the full function being tested to understand ALL its branches and behaviour
-- Check imports to understand the testing framework (Jest, Mocha, Vitest, etc.)
-- Look at sibling tests to understand the testing patterns used in this codebase
-- Check if there's a test file for the changed source file (same name with .test/.spec)
-
-DO NOT flag:
-- Generic "add more tests" without naming the specific function and untested scenario
-- Test style preferences (naming conventions, describe nesting, AAA pattern)
-- Missing tests for trivial pass-through functions, getters, setters, or type re-exports
-- That mocks are used (they're standard; only flag if a mock makes a test meaningless)
-- Missing integration/e2e tests unless the change is specifically a system integration point
-`.trim();
-
-
-/***/ }),
-
 /***/ 6758:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
@@ -36041,7 +35966,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runJudge = runJudge;
 const core = __importStar(__nccwpck_require__(7484));
-const config_1 = __nccwpck_require__(2973);
+const config_1 = __nccwpck_require__(9750);
 const findings_1 = __nccwpck_require__(1001);
 const prompts_1 = __nccwpck_require__(2413);
 async function callWithParseRetry(label, provider, systemPrompt, userPrompt, timeoutMs, parse) {
@@ -36216,16 +36141,10 @@ async function runReview(provider, config, pr) {
     }
     const categoryIds = activeCategories.map((c) => c.id);
     core.info(`Fan-out to ${activeCategories.length} specialists: ${categoryIds.map((id) => prompts_1.CATEGORY_LABELS[id] || id).join(', ')}`);
-    // Build shared context once per ordering variant:
-    //   - Default (test files deprioritized) — used by all specialists except tests.
-    //   - Test-prioritized — used by the tests specialist so test files are never dropped first.
-    const sharedContext = (0, prompts_1.buildSharedContext)(pr, config, false);
-    const testSharedContext = categoryIds.includes('tests')
-        ? (0, prompts_1.buildSharedContext)(pr, config, true)
-        : sharedContext;
+    const sharedContext = (0, prompts_1.buildSharedContext)(pr, config);
     // Stage 1: Fan out to all specialist agents in parallel via allSettled so
     // a single crashed specialist never aborts the rest of the pipeline.
-    const settled = await Promise.allSettled(activeCategories.map((cat) => (0, specialist_1.runSpecialistAgent)(provider, cat.id, cat.guidelines, pr, config, cat.id === 'tests' ? testSharedContext : sharedContext)));
+    const settled = await Promise.allSettled(activeCategories.map((cat) => (0, specialist_1.runSpecialistAgent)(provider, cat.id, cat.guidelines, pr, config, sharedContext)));
     const specialistResults = settled.map((result, i) => {
         if (result.status === 'fulfilled')
             return result.value;
@@ -36343,20 +36262,16 @@ exports.buildJudgeDedupSystemPrompt = buildJudgeDedupSystemPrompt;
 exports.buildJudgeDedupUserPrompt = buildJudgeDedupUserPrompt;
 exports.collectSpecialistFindings = collectSpecialistFindings;
 const core = __importStar(__nccwpck_require__(7484));
-const config_1 = __nccwpck_require__(2973);
+const config_1 = __nccwpck_require__(9750);
 const diff_1 = __nccwpck_require__(5036);
 exports.CATEGORY_LABELS = {
     security: 'Security',
-    tests: 'Test Coverage',
-    performance: 'Performance',
-    code: 'Code Guidelines',
+    code: 'Code Quality & Performance',
     custom: 'Custom Review',
 };
 const SPECIALIST_ROLES = {
     security: 'application security engineer specializing in vulnerability detection, exploitation patterns, and secure coding',
-    tests: 'QA architect specializing in test strategy, coverage analysis, and test reliability',
-    performance: 'performance engineer reviewing one pull request. Your ONLY job is to find performance issues: scalability, query efficiency, runtime cost. Ignore everything else (style, security, correctness-unrelated-to-perf, tests) — other specialists own those.',
-    code: 'senior software engineer specializing in code quality, correctness, error handling, and best practices',
+    code: 'senior software engineer specializing in code quality, correctness, performance, error handling, and best practices. You review for both correctness issues (bugs, race conditions, resource leaks) AND performance issues (N+1 queries, unbounded memory, blocking operations).',
     custom: 'senior engineer conducting a focused review based on the provided guidelines',
 };
 // ─── Injection guard (prepended to every system prompt) ────────────
@@ -36395,19 +36310,14 @@ Return JSON.`;
 /**
  * Builds the shared context — PR metadata, then the risk-scored file sections
  * (each containing the diff hunk and, for high-risk files, the full file content).
- *
- * @param prioritizeTests  When true (tests specialist), test-file scores are boosted
- *   so they receive high-priority treatment. When false (all other specialists),
- *   test files fall below the medium-risk threshold and are skipped entirely.
  */
-function buildSharedContext(pr, config, prioritizeTests = false) {
+function buildSharedContext(pr, config) {
     const fileContentsMap = {};
     for (const f of pr.fileContents) {
         fileContentsMap[f.path] = f.content;
     }
-    // Reserve ~2 000 chars for the metadata block + SPECIALIST_TAIL overhead.
     const budget = (0, config_1.tokensToChars)(config_1.MAX_PROMPT_TOKENS) - 2000 - SPECIALIST_TAIL.length;
-    const { context, includedFiles, skippedFiles, stats } = (0, diff_1.buildReviewContext)(pr.diff, fileContentsMap, budget, { boostTestFiles: prioritizeTests });
+    const { context, includedFiles, skippedFiles, stats } = (0, diff_1.buildReviewContext)(pr.diff, fileContentsMap, budget);
     core.info(`[context] ${stats.includedCount} files included, ${stats.skippedCount} skipped ` +
         `(${stats.utilizationPct}% of ${stats.budgetChars} char budget used)`);
     let prompt = buildPrMetadata(pr, config);
@@ -36542,7 +36452,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runSpecialistAgent = runSpecialistAgent;
 const core = __importStar(__nccwpck_require__(7484));
-const config_1 = __nccwpck_require__(2973);
+const config_1 = __nccwpck_require__(9750);
 const findings_1 = __nccwpck_require__(1001);
 const prompts_1 = __nccwpck_require__(2413);
 async function runSpecialistAgent(provider, categoryId, guidelines, pr, config, sharedContext) {
@@ -36592,7 +36502,113 @@ async function runSpecialistAgent(provider, categoryId, guidelines, pr, config, 
 
 /***/ }),
 
-/***/ 2973:
+/***/ 7285:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ALLOWED_FILENAMES = exports.ALLOWED_EXTENSIONS = void 0;
+exports.isAllowedFile = isAllowedFile;
+/**
+ * File extensions that the reviewer will process.
+ * Any file not matching these extensions is skipped before context building.
+ */
+exports.ALLOWED_EXTENSIONS = new Set([
+    // JavaScript / TypeScript
+    '.js',
+    '.jsx',
+    '.ts',
+    '.tsx',
+    '.mjs',
+    '.cjs',
+    // Python
+    '.py',
+    '.pyi',
+    // C / C++
+    '.c',
+    '.cpp',
+    '.cc',
+    '.cxx',
+    '.h',
+    '.hpp',
+    '.hxx',
+    // Go
+    '.go',
+    // Rust
+    '.rs',
+    // Java / Kotlin
+    '.java',
+    '.kt',
+    '.kts',
+    // C#
+    '.cs',
+    // Ruby
+    '.rb',
+    // PHP
+    '.php',
+    // Swift
+    '.swift',
+    // Shell
+    '.sh',
+    '.bash',
+    '.zsh',
+    // Config / Data (reviewable)
+    '.txt',
+    '.json',
+    '.yaml',
+    '.yml',
+    '.toml',
+    '.xml',
+    '.ini',
+    '.cfg',
+    // Web
+    '.html',
+    '.css',
+    '.scss',
+    '.sass',
+    '.less',
+    '.vue',
+    '.svelte',
+    // SQL
+    '.sql',
+    // Dockerfiles & infra
+    '.dockerfile',
+    '.tf',
+    '.hcl',
+]);
+/**
+ * Filenames (no extension match) that should always be reviewed.
+ * These are matched exactly against the basename.
+ */
+exports.ALLOWED_FILENAMES = new Set([
+    'Dockerfile',
+    'Makefile',
+    'Jenkinsfile',
+    'Procfile',
+    'Gemfile',
+    'Rakefile',
+    '.eslintrc',
+    '.prettierrc',
+    '.babelrc',
+]);
+/** Returns true if the file should be included for review based on its extension or name. */
+function isAllowedFile(filePath) {
+    const basename = filePath.includes('/')
+        ? filePath.slice(filePath.lastIndexOf('/') + 1)
+        : filePath;
+    if (exports.ALLOWED_FILENAMES.has(basename))
+        return true;
+    const dot = filePath.lastIndexOf('.');
+    if (dot < 0)
+        return false;
+    return exports.ALLOWED_EXTENSIONS.has(filePath.slice(dot).toLowerCase());
+}
+
+
+/***/ }),
+
+/***/ 6633:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
@@ -36730,8 +36746,6 @@ const ENV_VAR_NAMES = {
     repo_context: 'REPO_CONTEXT',
     review_policy: 'REVIEW_POLICY',
     security: 'SECURITY_GUIDELINES',
-    tests: 'TEST_GUIDELINES',
-    performance: 'PERFORMANCE_GUIDELINES',
     code: 'CODE_GUIDELINES',
     ignore_paths: 'IGNORE_PATHS',
     github_token: 'GITHUB_TOKEN',
@@ -36764,7 +36778,7 @@ function loadConfig() {
         throw new Error(`Invalid provider "${provider}". Use "anthropic", "openai", or "azure".`);
     }
     const model = resolve('model') || DEFAULT_MODELS[provider];
-    const enabledCategories = resolve('review_categories', 'security,tests,performance,code')
+    const enabledCategories = resolve('review_categories', 'security,code')
         .split(',')
         .map((c) => c.trim().toLowerCase())
         .filter(Boolean);
@@ -36793,8 +36807,6 @@ function loadConfig() {
         githubToken,
         categories: {
             security: resolveGuidelines('security'),
-            tests: resolveGuidelines('tests'),
-            performance: resolveGuidelines('performance'),
             code: resolveGuidelines('code'),
             custom: {
                 enabled: enabledCategories.includes('custom'),
@@ -36814,6 +36826,536 @@ function loadConfig() {
  * Kept so callers that import MAX_PROMPT_CHARS still compile.
  */
 exports.MAX_PROMPT_CHARS = exports.MAX_PROMPT_TOKENS * 4; // 300 000 chars
+
+
+/***/ }),
+
+/***/ 4656:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/**
+ * Per-filetype review rules.
+ * Each rule set provides focused guidance that supplements the category-level guidelines
+ * when the reviewer encounters a file of that type.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.FILE_RULES = void 0;
+exports.getFileRules = getFileRules;
+exports.getFileRiskWeight = getFileRiskWeight;
+exports.getFileReviewHints = getFileReviewHints;
+exports.FILE_RULES = [
+    // ─── Package Manifests ─────────────────────────────────────────
+    {
+        match: ['**/package.json'],
+        label: 'Node.js package manifest',
+        riskWeight: 1.2,
+        reviewHints: `
+- Flag new dependencies that are unmaintained (no updates in 2+ years) or have known vulnerabilities.
+- Check for version ranges that are too loose (e.g. "*" or ">=1.0.0") — prefer caret (^) or tilde (~).
+- Verify scripts don't execute arbitrary remote code (curl | sh patterns).
+- Flag devDependencies that belong in dependencies (runtime packages) and vice versa.
+- Check for duplicate packages under different names.
+- Watch for postinstall scripts that download or compile native binaries.`.trim(),
+    },
+    {
+        match: ['**/requirements.txt', '**/requirements*.txt', '**/constraints.txt'],
+        label: 'Python requirements file',
+        riskWeight: 1.2,
+        reviewHints: `
+- Flag unpinned dependencies (missing == version) — they cause non-reproducible builds.
+- Check for packages pulled from untrusted indexes (--index-url pointing to non-PyPI).
+- Flag deprecated packages (e.g. pycrypto → pycryptodome).
+- Verify no git+ssh:// URLs that could leak private repo access.
+- Watch for packages with known security advisories.`.trim(),
+    },
+    {
+        match: ['**/pyproject.toml', '**/setup.py', '**/setup.cfg'],
+        label: 'Python project config',
+        riskWeight: 1.2,
+        reviewHints: `
+- Verify build-system requires are pinned to compatible versions.
+- Check for overly broad entry-point definitions.
+- Flag dynamic version resolution that could be exploited.
+- Ensure classifiers match the actual Python version support.`.trim(),
+    },
+    {
+        match: ['**/Cargo.toml'],
+        label: 'Rust crate manifest',
+        riskWeight: 1.2,
+        reviewHints: `
+- Flag "unsafe" feature flags being enabled without justification.
+- Check for wildcard dependencies (version = "*").
+- Verify [patch] sections don't point to untrusted git repos.
+- Watch for build.rs scripts that download external artifacts.`.trim(),
+    },
+    {
+        match: ['**/go.mod'],
+        label: 'Go module file',
+        riskWeight: 1.1,
+        reviewHints: `
+- Flag replace directives pointing to local paths (won't work in CI).
+- Check for indirect dependencies that should be direct.
+- Verify Go version matches the project's minimum supported version.`.trim(),
+    },
+    {
+        match: ['**/Gemfile'],
+        label: 'Ruby Gemfile',
+        riskWeight: 1.2,
+        reviewHints: `
+- Flag gems fetched from git sources without a ref/tag pin.
+- Check for gems with known CVEs.
+- Verify source blocks only reference rubygems.org or trusted mirrors.`.trim(),
+    },
+    {
+        match: ['**/pom.xml', '**/build.gradle', '**/build.gradle.kts'],
+        label: 'JVM build config',
+        riskWeight: 1.1,
+        reviewHints: `
+- Flag snapshot dependencies in release builds.
+- Check for repositories pointing to HTTP (not HTTPS).
+- Verify plugin versions are pinned.
+- Watch for custom repositories that could serve malicious artifacts.`.trim(),
+    },
+    // ─── JavaScript / TypeScript ───────────────────────────────────
+    {
+        match: ['**/*.js', '**/*.jsx', '**/*.mjs', '**/*.cjs'],
+        label: 'JavaScript source',
+        riskWeight: 1.0,
+        reviewHints: `
+- Check for eval(), Function(), or new Function() usage with dynamic input.
+- Flag missing error handling on async operations (unhandled promise rejections).
+- Watch for prototype pollution patterns (recursive merge without safeguards).
+- Verify proper use of strict equality (=== vs ==) in security-sensitive comparisons.
+- Flag global state mutations that could cause race conditions.`.trim(),
+    },
+    {
+        match: ['**/*.ts', '**/*.tsx'],
+        label: 'TypeScript source',
+        riskWeight: 1.0,
+        reviewHints: `
+- Flag 'any' type usage that bypasses type safety in critical paths.
+- Check for type assertions (as) that could mask runtime errors.
+- Verify generics are properly constrained.
+- Watch for @ts-ignore / @ts-expect-error that hide real type issues.
+- Flag non-null assertions (!) on values that could legitimately be null.`.trim(),
+    },
+    // ─── Python ────────────────────────────────────────────────────
+    {
+        match: ['**/*.py'],
+        label: 'Python source',
+        riskWeight: 1.0,
+        reviewHints: `
+- Flag use of pickle.loads / yaml.load (without SafeLoader) on untrusted input.
+- Check for subprocess calls with shell=True using unsanitized input.
+- Watch for broad except clauses (bare except: or except Exception) that swallow errors.
+- Verify f-strings in SQL queries are parameterized instead.
+- Flag mutable default arguments (def foo(items=[])).
+- Check for proper resource cleanup (use context managers / with statements).`.trim(),
+    },
+    // ─── C / C++ ───────────────────────────────────────────────────
+    {
+        match: ['**/*.c', '**/*.cpp', '**/*.cc', '**/*.cxx', '**/*.h', '**/*.hpp'],
+        label: 'C/C++ source',
+        riskWeight: 1.5,
+        reviewHints: `
+- Flag buffer overflows: unchecked array indexing, strcpy/sprintf without bounds.
+- Check for use-after-free patterns and dangling pointers.
+- Watch for integer overflow in size calculations before allocation.
+- Verify all malloc/calloc results are checked for NULL.
+- Flag format string vulnerabilities (printf with user-controlled format).
+- Check for proper RAII / resource cleanup in all exit paths.
+- Watch for signed/unsigned comparison mismatches.`.trim(),
+    },
+    // ─── Go ────────────────────────────────────────────────────────
+    {
+        match: ['**/*.go'],
+        label: 'Go source',
+        riskWeight: 1.0,
+        reviewHints: `
+- Flag unchecked errors (err returned but not handled).
+- Check for goroutine leaks (goroutines without cancellation / context).
+- Watch for race conditions on shared state without sync primitives.
+- Verify defer statements for resource cleanup are in the right scope.
+- Flag use of unsafe package without strong justification.`.trim(),
+    },
+    // ─── Rust ──────────────────────────────────────────────────────
+    {
+        match: ['**/*.rs'],
+        label: 'Rust source',
+        riskWeight: 1.0,
+        reviewHints: `
+- Flag unsafe blocks without a SAFETY comment explaining the invariant.
+- Check for unwrap()/expect() on Results in non-test code (prefer ? or proper handling).
+- Watch for unbounded allocations (Vec::with_capacity with user-controlled size).
+- Verify lifetimes are correct, especially in public API signatures.`.trim(),
+    },
+    // ─── Java / Kotlin ─────────────────────────────────────────────
+    {
+        match: ['**/*.java', '**/*.kt', '**/*.kts'],
+        label: 'Java/Kotlin source',
+        riskWeight: 1.0,
+        reviewHints: `
+- Flag deserialization of untrusted data (ObjectInputStream, Gson/Jackson with polymorphic types).
+- Check for SQL injection via string concatenation in queries.
+- Watch for resource leaks (streams, connections without try-with-resources).
+- Verify null safety annotations match actual nullability.
+- Flag overly broad catch blocks (catch Exception / catch Throwable).`.trim(),
+    },
+    // ─── Ruby ──────────────────────────────────────────────────────
+    {
+        match: ['**/*.rb'],
+        label: 'Ruby source',
+        riskWeight: 1.0,
+        reviewHints: `
+- Flag use of eval, send, or public_send with user input.
+- Check for mass-assignment vulnerabilities (permit all / no strong params).
+- Watch for SQL injection via string interpolation in queries.
+- Verify proper use of strong parameters in controllers.
+- Flag open() with user-controlled paths (can execute commands with |).`.trim(),
+    },
+    // ─── PHP ───────────────────────────────────────────────────────
+    {
+        match: ['**/*.php'],
+        label: 'PHP source',
+        riskWeight: 1.1,
+        reviewHints: `
+- Flag use of eval(), exec(), system(), passthru() with user input.
+- Check for SQL injection via string interpolation (use prepared statements).
+- Watch for file inclusion vulnerabilities (include/require with user input).
+- Verify proper output escaping (htmlspecialchars) before rendering.
+- Flag serialize/unserialize with untrusted data.`.trim(),
+    },
+    // ─── Shell Scripts ─────────────────────────────────────────────
+    {
+        match: ['**/*.sh', '**/*.bash', '**/*.zsh'],
+        label: 'Shell script',
+        riskWeight: 1.3,
+        reviewHints: `
+- Flag unquoted variables that could cause word splitting or globbing.
+- Check for command injection via unsanitized variables in commands.
+- Watch for curl | sh patterns (downloading and executing arbitrary code).
+- Verify proper error handling (set -euo pipefail or equivalent).
+- Flag use of eval with variable expansion.
+- Check for TOCTOU races in file operations.`.trim(),
+    },
+    // ─── SQL ───────────────────────────────────────────────────────
+    {
+        match: ['**/*.sql'],
+        label: 'SQL file',
+        riskWeight: 1.3,
+        reviewHints: `
+- Flag destructive operations without WHERE clause (DELETE, UPDATE on all rows).
+- Check for DROP TABLE/DATABASE without IF EXISTS guards.
+- Verify migrations are reversible (have both up and down).
+- Watch for privilege escalation (GRANT ALL, SUPERUSER).
+- Flag raw user input in dynamic SQL construction.`.trim(),
+    },
+    // ─── Docker / Infrastructure ───────────────────────────────────
+    {
+        match: ['**/Dockerfile', '**/*.dockerfile'],
+        label: 'Dockerfile',
+        riskWeight: 1.3,
+        reviewHints: `
+- Flag use of latest tag (non-reproducible builds).
+- Check for running as root without USER directive.
+- Watch for secrets passed via build args (visible in image history).
+- Verify multi-stage builds don't leak build-time secrets into final image.
+- Flag ADD when COPY would suffice (ADD auto-extracts and fetches URLs).
+- Check for unnecessary packages increasing attack surface.`.trim(),
+    },
+    {
+        match: ['**/*.tf', '**/*.hcl'],
+        label: 'Terraform/HCL config',
+        riskWeight: 1.4,
+        reviewHints: `
+- Flag security groups with 0.0.0.0/0 ingress on sensitive ports.
+- Check for hardcoded secrets in variables or locals.
+- Verify state backend uses encryption at rest.
+- Watch for overly permissive IAM policies (Action: "*", Resource: "*").
+- Flag missing lifecycle prevent_destroy on stateful resources.`.trim(),
+    },
+    // ─── Config Files ──────────────────────────────────────────────
+    {
+        match: ['**/*.yaml', '**/*.yml'],
+        label: 'YAML config',
+        riskWeight: 0.8,
+        reviewHints: `
+- Flag hardcoded secrets, API keys, or passwords.
+- Check for overly permissive CORS or security configurations.
+- Verify environment-specific values aren't committed (should use env vars or secrets).
+- Watch for anchor/alias abuse that obscures the actual config.`.trim(),
+    },
+    {
+        match: ['**/*.json'],
+        label: 'JSON config/data',
+        riskWeight: 0.7,
+        reviewHints: `
+- Flag hardcoded secrets or tokens.
+- Check for overly permissive configuration values.
+- Verify schema compliance if the file has an associated $schema.
+- Watch for excessively large inline data that should be external.`.trim(),
+    },
+    {
+        match: ['**/*.toml', '**/*.ini', '**/*.cfg'],
+        label: 'Config file (TOML/INI)',
+        riskWeight: 0.7,
+        reviewHints: `
+- Flag hardcoded credentials or connection strings with passwords.
+- Check for debug/dev flags that shouldn't ship to production.
+- Verify sensitive values reference environment variables or vault paths.`.trim(),
+    },
+    // ─── Web (HTML/CSS) ────────────────────────────────────────────
+    {
+        match: ['**/*.html'],
+        label: 'HTML file',
+        riskWeight: 0.9,
+        reviewHints: `
+- Flag inline scripts with dynamic content (XSS vectors).
+- Check for missing CSP meta tags on pages with user content.
+- Watch for loading scripts from untrusted CDNs without SRI hashes.
+- Verify forms have proper CSRF protection.`.trim(),
+    },
+    {
+        match: ['**/*.css', '**/*.scss', '**/*.sass', '**/*.less'],
+        label: 'Stylesheet',
+        riskWeight: 0.4,
+        reviewHints: `
+- Flag CSS expressions or behavior properties (legacy IE attack surface).
+- Check for url() pointing to external untrusted resources.
+- Minimal security/logic review — focus on obvious anti-patterns only.`.trim(),
+    },
+];
+/**
+ * Look up all matching rules for a given file path.
+ * Multiple rules may match (e.g. a .ts file inside a specific directory).
+ */
+function getFileRules(filePath) {
+    return exports.FILE_RULES.filter((rule) => rule.match.some((pattern) => matchFileRule(filePath, pattern)));
+}
+/** Compute the aggregate risk weight for a file based on matching rules. */
+function getFileRiskWeight(filePath) {
+    const rules = getFileRules(filePath);
+    if (rules.length === 0)
+        return 1.0;
+    return Math.max(...rules.map((r) => r.riskWeight));
+}
+/** Collect review hints for a file to inject into specialist prompts. */
+function getFileReviewHints(filePath) {
+    const rules = getFileRules(filePath);
+    if (rules.length === 0)
+        return '';
+    return rules
+        .map((r) => `[${r.label}]\n${r.reviewHints}`)
+        .join('\n\n');
+}
+// ─── Internal matcher ────────────────────────────────────────────
+function matchFileRule(filePath, pattern) {
+    const basename = filePath.includes('/')
+        ? filePath.slice(filePath.lastIndexOf('/') + 1)
+        : filePath;
+    // Exact basename match (e.g. "Dockerfile")
+    if (!pattern.includes('/') && !pattern.includes('*')) {
+        return basename === pattern;
+    }
+    // Extension glob: **/*.ext
+    const extMatch = pattern.match(/^\*\*\/\*(\.\w+)$/);
+    if (extMatch) {
+        return filePath.endsWith(extMatch[1]) || basename.endsWith(extMatch[1]);
+    }
+    // Filename glob: **/filename
+    const filenameMatch = pattern.match(/^\*\*\/([^*]+)$/);
+    if (filenameMatch) {
+        return basename === filenameMatch[1] || filePath.endsWith(`/${filenameMatch[1]}`);
+    }
+    // Filename with wildcard: **/requirements*.txt
+    const wildcardMatch = pattern.match(/^\*\*\/([^*]*)(\*)([^*]*)$/);
+    if (wildcardMatch) {
+        const [, prefix, , suffix] = wildcardMatch;
+        return basename.startsWith(prefix) && basename.endsWith(suffix);
+    }
+    return false;
+}
+
+
+/***/ }),
+
+/***/ 4916:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.BINARY_EXTENSIONS = exports.DEFAULT_IGNORE_PATTERNS = void 0;
+/**
+ * Glob patterns for files that should never be sent to the reviewer.
+ * These are machine-generated, binary, or have no review value.
+ */
+exports.DEFAULT_IGNORE_PATTERNS = [
+    // ─── Dependency directories ────────────────────────────────────
+    '**/node_modules/**',
+    '**/vendor/**',
+    '**/bower_components/**',
+    '**/.venv/**',
+    '**/venv/**',
+    '**/env/**',
+    '**/__pycache__/**',
+    '**/.tox/**',
+    '**/_packages/**',
+    // ─── Build outputs ─────────────────────────────────────────────
+    '**/dist/**',
+    '**/build/**',
+    '**/.next/**',
+    '**/out/**',
+    '**/coverage/**',
+    '**/target/**',
+    '**/.gradle/**',
+    '**/bin/**',
+    '**/obj/**',
+    '**/.happypack/**',
+    '**/.cachefile/**',
+    '**/rpm/**',
+    '**/pkgs/**',
+    // ─── Version control internals ─────────────────────────────────
+    '**/.git/**',
+    '**/.svn/**',
+    // ─── Lock files (large, machine-generated) ─────────────────────
+    '**/package-lock.json',
+    '**/yarn.lock',
+    '**/pnpm-lock.yaml',
+    '**/bun.lockb',
+    '**/Gemfile.lock',
+    '**/Cargo.lock',
+    '**/go.sum',
+    '**/poetry.lock',
+    '**/composer.lock',
+    '**/Pipfile.lock',
+    '**/flake.lock',
+    // ─── Documentation (low review value) ──────────────────────────
+    '**/README.md',
+    '**/README*',
+    '**/CHANGELOG.md',
+    '**/CHANGELOG*',
+    '**/LICENSE',
+    '**/LICENSE.*',
+    '**/*.md',
+    // ─── VCS / editor config / IDE ──────────────────────────────────
+    '**/.gitignore',
+    '**/.gitattributes',
+    '**/.editorconfig',
+    '**/.vscode/**',
+    '**/.idea/**',
+    '**/.cursor/**',
+    '**/.claude/**',
+    // ─── CI/CD config ──────────────────────────────────────────────
+    '**/.github/**',
+    // ─── Test fixtures and mocks ───────────────────────────────────
+    '**/__mocks__/**',
+    '**/__fixtures__/**',
+    '**/*__testdata__*',
+    '**/__snapshots__/**',
+    // ─── Minified / bundled assets ─────────────────────────────────
+    '**/*.min.js',
+    '**/*.min.css',
+    '**/*.bundle.js',
+    '**/*.chunk.js',
+    // ─── Source maps ───────────────────────────────────────────────
+    '**/*.map',
+    // ─── Generated / vendored code ─────────────────────────────────
+    '**/*.pb.go',
+    '**/*_generated.*',
+    '**/*.gen.*',
+    '**/*.g.dart',
+    '**/*.freezed.dart',
+    '**/generated/**',
+    '**/auto-generated/**',
+    // ─── Test snapshots ────────────────────────────────────────────
+    '**/*.snap',
+    // ─── Binary / media assets ─────────────────────────────────────
+    '**/*.png',
+    '**/*.jpg',
+    '**/*.jpeg',
+    '**/*.gif',
+    '**/*.ico',
+    '**/*.webp',
+    '**/*.svg',
+    '**/*.woff',
+    '**/*.woff2',
+    '**/*.ttf',
+    '**/*.eot',
+    '**/*.pdf',
+    '**/*.zip',
+    '**/*.tar',
+    '**/*.gz',
+    '**/*.br',
+    '**/*.mp3',
+    '**/*.mp4',
+    '**/*.mov',
+    '**/*.avi',
+    '**/*.wasm',
+    // ─── Environment files ─────────────────────────────────────────
+    '**/*.env',
+    '**/*.env.example',
+    '**/*.env.*',
+];
+/**
+ * Binary file extensions — files with these extensions cannot be fetched as text.
+ * Used to skip content fetching entirely (not just ignore from review).
+ */
+exports.BINARY_EXTENSIONS = new Set([
+    // Images
+    '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.svg', '.bmp', '.tiff',
+    // Fonts
+    '.woff', '.woff2', '.ttf', '.eot', '.otf',
+    // Documents
+    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+    // Archives
+    '.zip', '.tar', '.gz', '.br', '.7z', '.rar', '.bz2',
+    // Audio / Video
+    '.mp3', '.mp4', '.mov', '.avi', '.wav', '.flac', '.ogg', '.webm',
+    // Compiled / Binary
+    '.wasm', '.pyc', '.pyo', '.class', '.o', '.so', '.dll', '.dylib', '.a',
+    '.exe', '.bin', '.dat',
+]);
+
+
+/***/ }),
+
+/***/ 9750:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getFileReviewHints = exports.getFileRiskWeight = exports.getFileRules = exports.FILE_RULES = exports.BINARY_EXTENSIONS = exports.DEFAULT_IGNORE_PATTERNS = exports.isAllowedFile = exports.ALLOWED_FILENAMES = exports.ALLOWED_EXTENSIONS = exports.MAX_PROMPT_CHARS = exports.loadConfig = exports.getJudgeDedupJsonInstruction = exports.getSpecialistJsonInstruction = exports.SEVERITY_RUBRIC = exports.MAX_FILE_SIZE = exports.TIMEOUT_MS = exports.MAX_PROMPT_TOKENS = exports.tokensToChars = exports.charsToTokens = void 0;
+// Application-level config (loadConfig, ReviewConfig, constants)
+var app_1 = __nccwpck_require__(6633);
+Object.defineProperty(exports, "charsToTokens", ({ enumerable: true, get: function () { return app_1.charsToTokens; } }));
+Object.defineProperty(exports, "tokensToChars", ({ enumerable: true, get: function () { return app_1.tokensToChars; } }));
+Object.defineProperty(exports, "MAX_PROMPT_TOKENS", ({ enumerable: true, get: function () { return app_1.MAX_PROMPT_TOKENS; } }));
+Object.defineProperty(exports, "TIMEOUT_MS", ({ enumerable: true, get: function () { return app_1.TIMEOUT_MS; } }));
+Object.defineProperty(exports, "MAX_FILE_SIZE", ({ enumerable: true, get: function () { return app_1.MAX_FILE_SIZE; } }));
+Object.defineProperty(exports, "SEVERITY_RUBRIC", ({ enumerable: true, get: function () { return app_1.SEVERITY_RUBRIC; } }));
+Object.defineProperty(exports, "getSpecialistJsonInstruction", ({ enumerable: true, get: function () { return app_1.getSpecialistJsonInstruction; } }));
+Object.defineProperty(exports, "getJudgeDedupJsonInstruction", ({ enumerable: true, get: function () { return app_1.getJudgeDedupJsonInstruction; } }));
+Object.defineProperty(exports, "loadConfig", ({ enumerable: true, get: function () { return app_1.loadConfig; } }));
+Object.defineProperty(exports, "MAX_PROMPT_CHARS", ({ enumerable: true, get: function () { return app_1.MAX_PROMPT_CHARS; } }));
+// Allowed file extensions
+var allowed_extensions_1 = __nccwpck_require__(7285);
+Object.defineProperty(exports, "ALLOWED_EXTENSIONS", ({ enumerable: true, get: function () { return allowed_extensions_1.ALLOWED_EXTENSIONS; } }));
+Object.defineProperty(exports, "ALLOWED_FILENAMES", ({ enumerable: true, get: function () { return allowed_extensions_1.ALLOWED_FILENAMES; } }));
+Object.defineProperty(exports, "isAllowedFile", ({ enumerable: true, get: function () { return allowed_extensions_1.isAllowedFile; } }));
+// Ignore patterns and binary detection
+var ignore_patterns_1 = __nccwpck_require__(4916);
+Object.defineProperty(exports, "DEFAULT_IGNORE_PATTERNS", ({ enumerable: true, get: function () { return ignore_patterns_1.DEFAULT_IGNORE_PATTERNS; } }));
+Object.defineProperty(exports, "BINARY_EXTENSIONS", ({ enumerable: true, get: function () { return ignore_patterns_1.BINARY_EXTENSIONS; } }));
+// Per-filetype review rules
+var file_rules_1 = __nccwpck_require__(4656);
+Object.defineProperty(exports, "FILE_RULES", ({ enumerable: true, get: function () { return file_rules_1.FILE_RULES; } }));
+Object.defineProperty(exports, "getFileRules", ({ enumerable: true, get: function () { return file_rules_1.getFileRules; } }));
+Object.defineProperty(exports, "getFileRiskWeight", ({ enumerable: true, get: function () { return file_rules_1.getFileRiskWeight; } }));
+Object.defineProperty(exports, "getFileReviewHints", ({ enumerable: true, get: function () { return file_rules_1.getFileReviewHints; } }));
 
 
 /***/ }),
@@ -36867,7 +37409,7 @@ exports.scoreFile = scoreFile;
 exports.buildReviewContext = buildReviewContext;
 exports.buildFileSummary = buildFileSummary;
 const core = __importStar(__nccwpck_require__(7484));
-const config_1 = __nccwpck_require__(2973);
+const config_1 = __nccwpck_require__(9750);
 const ignore_1 = __nccwpck_require__(9049);
 // ─── Test-file detection ────────────────────────────────────────────
 exports.TEST_PATH_PATTERNS = [
@@ -36887,7 +37429,6 @@ exports.TEST_PATH_PATTERNS = [
     /\/playwright\//,
 ];
 const TEST_FILE_LOW_SCORE = 0.2;
-const TEST_FILE_BOOSTED_SCORE = 0.8;
 function isTestFile(filepath) {
     return exports.TEST_PATH_PATTERNS.some((pattern) => pattern.test(filepath));
 }
@@ -37039,10 +37580,9 @@ exports.RISK_PATH_PATTERNS = [
     { pattern: /package-lock\.json|yarn\.lock|\.lock$|dist\/|build\//i, score: 0.00 },
 ];
 function scoreFile(filePath, diffHunk, options = {}) {
-    // Test files are handled separately — path patterns like "router" or "service"
-    // must not inflate test file scores above implementation files.
+    // Test files get a low fixed score — they are deprioritized for review context.
     if (isTestFile(filePath)) {
-        return options.boostTestFiles ? TEST_FILE_BOOSTED_SCORE : TEST_FILE_LOW_SCORE;
+        return TEST_FILE_LOW_SCORE;
     }
     let patternScore = null;
     for (const { pattern, score: s } of exports.RISK_PATH_PATTERNS) {
@@ -37171,82 +37711,19 @@ function buildFileSummary(includedFiles, skippedFiles) {
 /***/ }),
 
 /***/ 9049:
-/***/ ((__unused_webpack_module, exports) => {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.isAllowedFile = void 0;
 exports.parseIgnorePatterns = parseIgnorePatterns;
 exports.shouldIgnoreFile = shouldIgnoreFile;
 exports.filterDiffByFiles = filterDiffByFiles;
 exports.isBinaryFile = isBinaryFile;
-const DEFAULT_IGNORE_PATTERNS = [
-    // dependency directories
-    '**/node_modules/**',
-    '**/vendor/**',
-    // build outputs
-    '**/dist/**',
-    '**/build/**',
-    '**/.next/**',
-    '**/out/**',
-    '**/coverage/**',
-    // version-control internals
-    '**/.git/**',
-    // lock files (large, machine-generated, no review value)
-    '**/package-lock.json',
-    '**/yarn.lock',
-    '**/pnpm-lock.yaml',
-    '**/bun.lockb',
-    '**/Gemfile.lock',
-    '**/Cargo.lock',
-    '**/go.sum',
-    '**/poetry.lock',
-    // markdown docs (no review value)
-    '**/README.md',
-    '**/README*',
-    '**/CHANGELOG.md',
-    '**/CHANGELOG*',
-    '**/*.md',
-    // VCS / editor config
-    '**/.gitignore',
-    '**/.gitattributes',
-    // CI/CD config — workflow files, not application logic
-    '**/.github/**',
-    // test fixtures and mocks — not application logic
-    '**/__mocks__/**',
-    '**/__fixtures__/**',
-    '**/*__testdata__*',
-    // minified / bundled assets
-    '**/*.min.js',
-    '**/*.min.css',
-    '**/*.bundle.js',
-    // source maps
-    '**/*.map',
-    // generated / vendored code
-    '**/*.pb.go',
-    '**/*_generated.*',
-    '**/*.gen.*',
-    // test snapshots
-    '**/*.snap',
-    // binary / media assets
-    '**/*.png',
-    '**/*.jpg',
-    '**/*.jpeg',
-    '**/*.gif',
-    '**/*.ico',
-    '**/*.woff',
-    '**/*.woff2',
-    '**/*.ttf',
-    '**/*.pdf',
-    '**/*.zip',
-    // env files
-    '**/*.env',
-    '**/*.env.example',
-    '**/*.env.*',
-    '**/*.env.*.*',
-    '**/*.env.*.*.*',
-    '**/*.env.*.*.*.*',
-];
+const ignore_patterns_1 = __nccwpck_require__(4916);
+const allowed_extensions_1 = __nccwpck_require__(7285);
+Object.defineProperty(exports, "isAllowedFile", ({ enumerable: true, get: function () { return allowed_extensions_1.isAllowedFile; } }));
 function globToRegex(glob) {
     const escaped = glob
         .replace(/[.+^${}()|[\]\\]/g, '\\$&')
@@ -37285,10 +37762,10 @@ function parseIgnorePatterns(input) {
         .split(',')
         .map((p) => p.trim())
         .filter(Boolean);
-    return [...DEFAULT_IGNORE_PATTERNS, ...custom];
+    return [...ignore_patterns_1.DEFAULT_IGNORE_PATTERNS, ...custom];
 }
 function shouldIgnoreFile(filename, patterns) {
-    const allPatterns = patterns.length > 0 ? patterns : DEFAULT_IGNORE_PATTERNS;
+    const allPatterns = patterns.length > 0 ? patterns : ignore_patterns_1.DEFAULT_IGNORE_PATTERNS;
     return allPatterns.some((glob) => matchGlob(filename, glob));
 }
 function filterDiffByFiles(diff, ignoredFiles) {
@@ -37311,19 +37788,12 @@ function filterDiffByFiles(diff, ignoredFiles) {
     return kept.join('');
 }
 // ─── Binary file detection (skip content fetch) ───────────────────
-const BINARY_EXTENSIONS = new Set([
-    '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.svg',
-    '.woff', '.woff2', '.ttf', '.eot',
-    '.pdf', '.zip', '.tar', '.gz', '.br',
-    '.mp3', '.mp4', '.mov', '.avi',
-    '.wasm', '.pyc', '.class', '.o', '.so', '.dll',
-]);
 /** True when a file path has a binary/media extension and should not be fetched as text. */
 function isBinaryFile(filePath) {
     const dot = filePath.lastIndexOf('.');
     if (dot < 0)
         return false;
-    return BINARY_EXTENSIONS.has(filePath.slice(dot).toLowerCase());
+    return ignore_patterns_1.BINARY_EXTENSIONS.has(filePath.slice(dot).toLowerCase());
 }
 
 
@@ -37395,7 +37865,6 @@ exports.extractJson = extractJson;
 exports.formatFindingsMarkdown = formatFindingsMarkdown;
 const VALID_SEVERITIES = new Set(['critical', 'warning', 'suggestion']);
 const VALID_CONFIDENCES = new Set(['high', 'medium', 'low']);
-const MAX_FINDINGS = 8;
 const VAGUE_PATTERNS = [
     /^ensure\b/i,
     /^make sure\b/i,
@@ -37423,7 +37892,7 @@ function isVagueFinding(message) {
     return parts.some((part) => VAGUE_PATTERNS.some((pattern) => pattern.test(part)));
 }
 function parseStructuredReview(raw, options = {}) {
-    const { capFindings = true, filterVague = true, filterLowConfidence = true, } = options;
+    const { capFindings: _capFindings = true, filterVague = true, filterLowConfidence = true, } = options;
     const parsed = parseJsonPayload(raw);
     const summary = typeof parsed.summary === 'string' ? parsed.summary : '';
     const findings = [];
@@ -37462,7 +37931,7 @@ function parseStructuredReview(raw, options = {}) {
     const sorted = sortFindingsForReview(findings);
     return {
         summary,
-        findings: capFindings ? sorted.slice(0, MAX_FINDINGS) : sorted,
+        findings: sorted,
     };
 }
 function buildFindingSummary(findings) {
@@ -37482,10 +37951,10 @@ function buildFindingSummary(findings) {
 }
 /** Build the final review from deduplicated judge output. */
 function buildJudgeReviewFromDedup(findings) {
-    const capped = sortFindingsForReview(findings).slice(0, MAX_FINDINGS);
+    const sorted = sortFindingsForReview(findings);
     return {
-        summary: buildFindingSummary(capped),
-        findings: capped,
+        summary: buildFindingSummary(sorted),
+        findings: sorted,
     };
 }
 /**
@@ -37606,11 +38075,11 @@ function mechanicalDedup(findings) {
 }
 /** Build a degraded review when the judge fails to parse after retry. */
 function buildUnverifiedFallback(findings, reason) {
-    const capped = mechanicalDedup(findings).slice(0, MAX_FINDINGS);
+    const deduped = mechanicalDedup(findings);
     return {
         summary: `Review completed with degraded judge output (dedup failed: ${reason}). ` +
             `Findings below are from specialist agents and may include duplicates.`,
-        findings: capped,
+        findings: deduped,
         unverified: true,
     };
 }
@@ -38306,7 +38775,7 @@ const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const ignore_1 = __nccwpck_require__(9049);
 const diff_1 = __nccwpck_require__(5036);
-const config_1 = __nccwpck_require__(2973);
+const config_1 = __nccwpck_require__(9750);
 const client_1 = __nccwpck_require__(6584);
 const file_contents_1 = __nccwpck_require__(5092);
 async function listAllChangedFiles(octokit, owner, repo, prNumber) {
@@ -38489,7 +38958,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
-const config_1 = __nccwpck_require__(2973);
+const config_1 = __nccwpck_require__(9750);
 const providers_1 = __nccwpck_require__(7486);
 const github_1 = __nccwpck_require__(1631);
 const agents_1 = __nccwpck_require__(6758);
