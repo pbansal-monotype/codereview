@@ -1,3 +1,4 @@
+import { ToolCache } from './tools';
 export interface RiskPattern {
     pattern: RegExp;
     score: number;
@@ -33,13 +34,14 @@ export interface ReviewContext {
     stats: ReviewContextStats;
 }
 export interface BuildReviewContextOptions {
-    /** When true, test-file scores are boosted so the tests specialist treats them as high priority. */
-    boostTestFiles?: boolean;
     /** True when the diff hunk is a newly added file (not a modification). */
     isNew?: boolean;
+    /** Shared per-PR tool cache — reused across context assembly and specialist tool loops. */
+    toolCache?: ToolCache;
+    /** Ignore patterns for blast-radius reference search. */
+    ignorePatterns?: string[];
 }
 export interface PrepareDiffOptions {
-    maxDiffSize: number;
     redactSecrets: boolean;
 }
 export declare const TEST_PATH_PATTERNS: RegExp[];

@@ -10,8 +10,6 @@ interface FormatOptions {
     totalTokens: TokenUsage;
     apiCalls: number;
     specialistResults: SpecialistResult[];
-    failClosed?: boolean;
-    failReason?: string;
 }
 export declare function formatReviewMarkdown(opts: FormatOptions): string;
 export {};

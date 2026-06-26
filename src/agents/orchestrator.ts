@@ -1,19 +1,58 @@
 import * as core from '@actions/core';
 import { ReviewConfig, CategoryGuidelines } from '../config';
-import { hasCriticalFindings } from '../findings';
+import { Finding, hasCriticalFindings, StructuredReview } from '../output/findings';
 import { AIProvider } from '../providers';
 import { PullRequestData } from '../github';
-import { ReviewResult, SpecialistResult } from './types';
-import { CATEGORY_LABELS, buildSharedContext } from './prompts';
-import { runSpecialistAgent } from './specialist';
+import { ReviewResult, ReviewRunOptions, SpecialistResult } from './types';
+import { CATEGORY_LABELS, buildSharedContextResult } from '../config/prompts';
+import { runSpecialistAgent, buildToolContext } from './specialist';
 import { runJudge } from './judge';
-import { formatReviewMarkdown } from './format';
+import { formatReviewMarkdown } from '../output/format';
+import { parseDiffForCommentTargets } from '../context/diff';
+import { ToolLoopDebugRecorder } from '../output/debug';
+import { collectSpecialistFindings } from '../config/prompts';
+
+function filterFindingsToDiff(
+  structured: StructuredReview,
+  diff: string,
+): { structured: StructuredReview; dropped: Finding[] } {
+  const targets = parseDiffForCommentTargets(diff);
+  const dropped: Finding[] = [];
+
+  const filteredFindings = structured.findings.filter((f: Finding) => {
+    // If we don't have precise location info, keep the finding.
+    if (!f.file || typeof f.line !== 'number') return true;
+
+    const fileTargets = targets.get(f.file);
+    if (!fileTargets || fileTargets.size === 0) {
+      dropped.push(f);
+      return false;
+    }
+
+    if (!fileTargets.has(f.line)) {
+      dropped.push(f);
+      return false;
+    }
+
+    return true;
+  });
+
+  return {
+    structured: {
+      ...structured,
+      findings: filteredFindings,
+    },
+    dropped,
+  };
+}
 
 export async function runReview(
   provider: AIProvider,
   config: ReviewConfig,
   pr: PullRequestData,
+  options: ReviewRunOptions = {},
 ): Promise<ReviewResult> {
+  const debug = options.debug === true;
   const activeCategories: Array<{
     id: string;
     guidelines: CategoryGuidelines;
@@ -58,13 +97,14 @@ export async function runReview(
     `Fan-out to ${activeCategories.length} specialists: ${categoryIds.map((id) => CATEGORY_LABELS[id] || id).join(', ')}`,
   );
 
-  // Build shared context once per ordering variant:
-  //   - Default (test files deprioritized) — used by all specialists except tests.
-  //   - Test-prioritized — used by the tests specialist so test files are never dropped first.
-  const sharedContext = buildSharedContext(pr, config, false);
-  const testSharedContext = categoryIds.includes('tests')
-    ? buildSharedContext(pr, config, true)
-    : sharedContext;
+  const toolCtx = buildToolContext(pr, config);
+  const { prompt: sharedContext, reviewContext } = buildSharedContextResult(
+    pr,
+    config,
+    toolCtx.cache,
+    debug,
+  );
+  const debugRecorder = debug ? new ToolLoopDebugRecorder() : undefined;
 
   // Stage 1: Fan out to all specialist agents in parallel via allSettled so
   // a single crashed specialist never aborts the rest of the pipeline.
@@ -76,7 +116,9 @@ export async function runReview(
         cat.guidelines,
         pr,
         config,
-        cat.id === 'tests' ? testSharedContext : sharedContext,
+        sharedContext,
+        toolCtx,
+        debugRecorder,
       ),
     ),
   );
@@ -91,6 +133,7 @@ export async function runReview(
       categoryId: cat.id,
       findings: [],
       tokens: { input: 0, output: 0 },
+      apiCalls: 0,
       failed: true,
       error: message,
     };
@@ -101,9 +144,11 @@ export async function runReview(
     0,
   );
   const failedCount = specialistResults.filter((r) => r.failed).length;
+  const specialistApiCalls = specialistResults.reduce((sum, r) => sum + r.apiCalls, 0);
 
   core.info(
-    `Specialists complete: ${totalSpecialistFindings} raw finding(s), ${failedCount} failed agent(s)`,
+    `Specialists complete: ${totalSpecialistFindings} raw finding(s), ${failedCount} failed agent(s), ` +
+    `${specialistApiCalls} specialist API call(s)`,
   );
 
   for (const result of specialistResults) {
@@ -123,51 +168,15 @@ export async function runReview(
     }
   }
 
-  // Stage 2: Judge — deduplicate then rewrite (two agent calls).
-  // Fail-closed: if either judge agent crashes (including unrecoverable parse failures)
-  // we block the PR rather than silently shipping unverified findings.
-  let judgeTokens = { input: 0, output: 0 };
-  let structured;
-
-  try {
-    const judgeResult = await runJudge(
-      provider,
-      specialistResults,
-      pr,
-      config,
-      sharedContext,
-      categoryIds,
-    );
-    structured = judgeResult.structured;
-    judgeTokens = judgeResult.tokens;
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    core.error(`[judge] Judge failed: ${message} — failing closed (blocking PR)`);
-
-    const totalInput = specialistResults.reduce((s, r) => s + r.tokens.input, 0);
-    const totalOutput = specialistResults.reduce((s, r) => s + r.tokens.output, 0);
-
-    const markdown = formatReviewMarkdown({
-      structured: undefined,
-      pr,
-      config,
-      categories: categoryIds,
-      totalTokens: { input: totalInput, output: totalOutput },
-      apiCalls: activeCategories.length + 2,
-      specialistResults,
-      failClosed: true,
-      failReason: message,
-    });
-
-    return {
-      markdown,
-      hasCritical: true,
-      categories: categoryIds,
-      tokensUsed: totalInput + totalOutput,
-      inputTokens: totalInput,
-      outputTokens: totalOutput,
-    };
-  }
+  // Stage 2: Judge — deduplicate findings (single agent call).
+  // Parse failures fall back to unverified specialist findings inside runJudge.
+  const judgeResult = await runJudge(provider, specialistResults, config);
+  const rawJudgeFindings = judgeResult.structured.findings.length;
+  const { structured, dropped: diffFilteredOut } = filterFindingsToDiff(
+    judgeResult.structured,
+    pr.diff,
+  );
+  const judgeTokens = judgeResult.tokens;
 
   core.info(`[judge] Final approved findings: ${structured.findings.length}`);
   for (const f of structured.findings) {
@@ -184,7 +193,7 @@ export async function runReview(
   const totalOutput =
     specialistResults.reduce((sum, r) => sum + r.tokens.output, 0) +
     judgeTokens.output;
-  const apiCalls = activeCategories.length + 2;
+  const apiCalls = specialistApiCalls + 1; // +1 for judge
 
   const markdown = formatReviewMarkdown({
     structured,
@@ -194,7 +203,17 @@ export async function runReview(
     totalTokens: { input: totalInput, output: totalOutput },
     apiCalls,
     specialistResults,
-    failClosed: false,
+    debug: debug
+      ? {
+          contextStats: reviewContext.stats,
+          fileRanking: reviewContext.fileRanking,
+          toolCalls: debugRecorder?.calls ?? [],
+          diffFilteredOut,
+          judgeUnverified: structured.unverified === true,
+          judgeRawFindings: collectSpecialistFindings(specialistResults).length,
+          judgeFinalFindings: rawJudgeFindings,
+        }
+      : undefined,
   });
 
   return {

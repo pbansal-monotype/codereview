@@ -4,3 +4,6 @@ dist-test/
 *.log
 .DS_Store
 Debug
+test.md
+docs/
+crud-demo/

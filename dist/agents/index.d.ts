@@ -1,3 +1,3 @@
 export { runReview } from './orchestrator';
-export { ReviewResult } from './types';
+export { ReviewResult, ReviewRunOptions } from './types';
 //# sourceMappingURL=index.d.ts.map

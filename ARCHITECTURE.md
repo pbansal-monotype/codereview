@@ -8,102 +8,256 @@ A TypeScript GitHub Action that automates pull request code review using a multi
 
 | Metric | Value |
 |--------|-------|
-| Specialist Agents | 5 (security, tests, performance, code, custom) |
-| Judge Stages | 2 (dedup + rewrite) |
-| Token Budget | ~75k tokens (~300k chars) |
-| Max Findings | 8 per review |
-| LLM Calls per PR | up to 7 (5 specialists + 2 judge) |
+| Specialist Agents | 3 active (`security`, `code`, `custom`) |
+| Tool-Loop Specialists | 2 (`security`, `code`) — up to 3 hops each |
+| Judge Stages | 1 (dedup) |
+| Token Budget | ~75k tokens (~300k chars) per prompt |
+| LLM Calls per PR | 1 judge + 1 per enabled specialist + tool-loop hops + caller subagents |
+| Allowed Extensions | 50+ (JS, TS, Python, C/C++, Go, Rust, Java, Ruby, PHP, etc.) |
+| Ignore Patterns | 90+ default globs |
+| File-Specific Rules | 25 rule sets (risk weights + review hints) |
+
+> **Note:** `action.yml` still documents legacy `tests` and `performance` categories. The runtime config (`loadConfig`) enables `security`, `code`, and `custom` only. The `code` specialist covers correctness, error handling, and performance in a single pass.
 
 ---
 
 ## High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                       GitHub Actions Runner                         │
-│        pull_request → action.yml → dist/index.js (Node 20)          │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-            ┌──────────────────┼──────────────────┐
-            ▼                  ▼                  ▼
-      ┌──────────┐     ┌──────────────┐    ┌─────────────┐
-      │  Config  │     │  GitHub API  │    │ LLM Provider│
-      │  inputs  │     │  diff, files │    │  Anthropic  │
-      │  env vars│     │  comments    │    │  OpenAI     │
-      └──────────┘     └──────────────┘    │  Azure      │
-                               │           └─────────────┘
-                      ┌────────┴────────┐        │
-                      │ Context Builder │        │
-                      │ risk score +    │        │
-                      │ token budget    │        │
-                      └────────┬────────┘        │
-                               │                 │
-            ┌──────────┬───────┼───────┬─────────┤
-            ▼          ▼       ▼       ▼         ▼
-        Security    Tests   Perf    Code      Custom    ← Specialists (parallel)
-            │          │       │       │         │
-            └──────────┴───────┼───────┴─────────┘
-                               ▼
-                      ┌────────────────┐
-                      │ Judge: Dedup   │
-                      └───────┬────────┘
-                              ▼
-                      ┌────────────────┐
-                      │ Judge: Rewrite │
-                      └───────┬────────┘
-                              ▼
-                      ┌────────────────┐
-                      │  Format MD     │
-                      └───────┬────────┘
-                              ▼
-               PR Summary Comment + Inline Comments
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         GitHub Actions Runner                                │
+│          pull_request → action.yml → dist/index.js (Node 20)                 │
+└───────────────────────────────────┬─────────────────────────────────────────┘
+                                    │
+         ┌──────────────────────────┼──────────────────────────┐
+         ▼                          ▼                          ▼
+   ┌───────────┐           ┌──────────────┐          ┌──────────────┐
+   │  Config   │           │  GitHub API  │          │ LLM Provider │
+   │  Layer    │           │  REST Client │          │  (Anthropic  │
+   │           │           │              │          │   OpenAI     │
+   │ ┌───────┐ │           │ • PR metadata│          │   Azure)     │
+   │ │ file  │ │           │ • Unified diff│         └──────────────┘
+   │ │ rules │ │           │ • File list  │                 │
+   │ ├───────┤ │           │ • File content│                │
+   │ │prompts│ │           │ • Comments   │                 │
+   │ ├───────┤ │           └──────┬───────┘                 │
+   │ │ tools │ │                  │                         │
+   │ ├───────┤ │                  ▼                         │
+   │ │  app  │ │        ┌─────────────────┐                │
+   │ └───────┘ │        │ Context Builder │                │
+   └───────────┘        │                 │                │
+                        │ • File filter   │                │
+                        │ • Risk scoring  │                │
+                        │ • Blast radius  │                │
+                        │ • Token budget  │                │
+                        │ • Secret redact │                │
+                        └────────┬────────┘                │
+                                 │                         │
+          ┌──────────────────────┼──────────────────────┐  │
+          ▼                      ▼                      ▼  ▼
+      Security               Code                   Custom    ← Specialists
+          │                      │                      │         (parallel)
+          │  tool loop           │  tool loop           │  single-shot
+          │  (read/search/refs)  │  (read/search/refs)  │
+          └──────────────────────┼──────────────────────┘
+                                 ▼
+                        ┌────────────────┐
+                        │  Judge: Dedup  │
+                        │  (with retry)  │
+                        └───────┬────────┘
+                                ▼
+                        ┌────────────────┐
+                        │ Diff Anchoring │
+                        │ (filter to     │
+                        │  changed lines)│
+                        └───────┬────────┘
+                                ▼
+                        ┌────────────────┐
+                        │  Format MD     │
+                        └───────┬────────┘
+                                ▼
+                 PR Summary Comment + Inline Comments
+                        +  State Persistence
 ```
 
 ---
 
-## Review Pipeline (Data Flow)
+## Complete Pipeline Flow
 
 ```
-1. GitHub PR Event
-   │
-   ▼
-2. loadConfig()                     ← action inputs + env vars + default guidelines
-   │
-   ▼
-3. createProvider()                 ← Anthropic | OpenAI | Azure
-   │
-   ▼
-4. getPullRequestData()
-   ├── GitHub: pulls.get            (metadata)
-   ├── GitHub: pulls.get            (diff format)
-   ├── GitHub: pulls.listFiles      (all changed paths)
-   ├── Filter ignored files         (glob patterns)
-   ├── prepareDiffForReview()       → redact secrets, truncate at file boundaries
-   └── fetchFileContents()          → full files from head branch (optional)
-   │
-   ▼
-5. runReview() [orchestrator]
-   ├── buildSharedContext()         → risk-scored diff + file contents within ~75k token budget
-   │
-   ├── Stage 1: Promise.allSettled(runSpecialistAgent × N)
-   │     Each specialist:
-   │       system prompt (role + guidelines + injection guard + JSON schema)
-   │       user prompt   (PR metadata + context + review instructions)
-   │       → provider.review() → parseSpecialistFindings()
-   │
-   ├── Stage 2: runJudge()
-   │     ├── collectSpecialistFindings()
-   │     ├── judge/dedup LLM call   → parseDedupedFindings()
-   │     └── judge/rewrite LLM call → parseJudgeRewriteReview() → reconcileRewrittenFindings()
-   │
-   └── formatReviewMarkdown()
-   │
-   ▼
-6. Outputs
-   ├── core.setOutput(review_body, has_critical_issues, ...)
-   ├── postReviewComment()          → upsert PR comment with marker
-   ├── postInlineReview()           → inline comments on valid diff lines
-   └── core.setFailed()             if critical + fail_on_critical
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 1: INITIALIZATION                                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  GitHub Action Trigger (pull_request: opened / synchronize)                  │
+│       │                                                                      │
+│       ▼                                                                      │
+│  loadConfig()                                                                │
+│       │  Reads: action inputs, env vars, default guidelines                  │
+│       │  Outputs: ReviewConfig (provider, model, categories, patterns)       │
+│       │                                                                      │
+│       ▼                                                                      │
+│  createProvider(config)                                                       │
+│       │  Instantiates: AnthropicProvider | OpenAIProvider | AzureProvider     │
+│       │                                                                      │
+│       ▼                                                                      │
+│  createStateStore(config)                                                     │
+│       │  Backend: comment-marker | gist | none                               │
+│       │  Reads: last_reviewed_sha for this PR                                │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 2: DATA COLLECTION                                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  getPullRequestData(token, options)                                           │
+│       │                                                                      │
+│       ├── pulls.get() → PR metadata (title, body, author, branches)          │
+│       │                                                                      │
+│       ├── Incremental check:                                                 │
+│       │     last_reviewed_sha exists + reachable?                            │
+│       │       YES → compareCommitsWithBasehead(old_sha...head_sha)           │
+│       │       NO  → pulls.get(format: 'diff') [full PR diff]                │
+│       │                                                                      │
+│       ├── pulls.listFiles() → all changed file paths                         │
+│       │                                                                      │
+│       ├── partitionFiles(allFiles, ignorePatterns)                            │
+│       │     shouldIgnoreFile() via filter/file-filter.ts                     │
+│       │                                                                      │
+│       ├── prepareDiffForReview(rawDiff, ignoredFiles)                         │
+│       │     • filterDiffByFiles() → remove ignored file chunks               │
+│       │     • redactSecrets() → strip API keys, tokens, passwords            │
+│       │     • smartTruncateDiff() → cap at 300k chars at file boundaries     │
+│       │                                                                      │
+│       └── fetchFileContents(reviewedFiles)                                   │
+│             • Concurrent fetch (max 10) of full files from HEAD ref          │
+│             • Skip binary files (BINARY_EXTENSIONS check)                    │
+│             • Truncate to MAX_FILE_SIZE (10k chars)                           │
+│                                                                              │
+│  Output: PullRequestData { diff, fileContents, reviewedFiles, metadata }     │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 3: CONTEXT BUILDING                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  buildSharedContext(pr, config, toolCache?)                                   │
+│       │                                                                      │
+│       ├── buildPrMetadata() → Title, author, branch, description             │
+│       │                                                                      │
+│       ├── buildReviewContext(diff, fileContents, budget)                      │
+│       │     │                                                                │
+│       │     ├── splitDiffByFile(diff) → per-file hunks                       │
+│       │     │                                                                │
+│       │     ├── scoreFile(path, hunk) → base risk score                      │
+│       │     │                                                                │
+│       │     ├── applyBlastRadiusScoring()                                    │
+│       │     │     • Extract changed symbols from high-risk files             │
+│       │     │     • findBlastRadiusCallers() via ts-morph / tree-sitter      │
+│       │     │     • Boost effectiveScore +0.25 when callers found            │
+│       │     │                                                                │
+│       │     ├── Sort by effectiveScore (descending)                          │
+│       │     │                                                                │
+│       │     └── Allocate into char budget:                                   │
+│       │           effectiveScore ≥ 0.6 → <diff> + <file> (full content)     │
+│       │           effectiveScore ≥ 0.3 → <diff> only                        │
+│       │           effectiveScore < 0.3 → excluded                            │
+│       │                                                                      │
+│       └── buildFileSummary() → visual file list with risk indicators         │
+│                                                                              │
+│  Output: sharedContext string (≤ 75k tokens)                                 │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 4: SPECIALIST AGENTS (Parallel)                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  buildToolContext(pr, config) → shared ToolContext + ToolCache               │
+│  Promise.allSettled([ specialist × N ])                                       │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ For each enabled category (security, code, custom):                  │     │
+│  │                                                                      │     │
+│  │  buildSpecialistSystemPrompt(categoryId, guidelines, config)         │     │
+│  │  buildSpecialistUserPrompt(sharedContext)                            │     │
+│  │                                                                      │     │
+│  │  security / code → runSpecialistToolLoop()                           │     │
+│  │    • Up to MAX_TOOL_HOPS (3) rounds of tool requests                 │     │
+│  │    • Tools: read_file, search_text, find_references                  │     │
+│  │    • find_references with multiple hits → caller subagents           │     │
+│  │    • Final hop returns action: "done" with findings JSON              │     │
+│  │                                                                      │     │
+│  │  custom → provider.review() single-shot                               │     │
+│  │                                                                      │     │
+│  │  parseSpecialistFindings(response, categoryId)                       │     │
+│  │    • Filter: low confidence → drop                                   │     │
+│  │    • Filter: vague phrasing → drop                                   │     │
+│  │    • Filter: missing file/snippet → drop                            │     │
+│  │                                                                      │     │
+│  │  Output: SpecialistResult { categoryId, findings[], tokens, failed } │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  Error handling: crashed specialists → { failed: true, error }               │
+│  Other specialists continue unaffected (allSettled)                           │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 5: JUDGE — DEDUPLICATION                                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  collectSpecialistFindings(results) → merge all findings                     │
+│       │                                                                      │
+│       ▼                                                                      │
+│  callWithParseRetry('judge/dedup', ...)                                      │
+│       │                                                                      │
+│       ├── buildJudgeDedupSystemPrompt(config)                                │
+│       ├── buildJudgeDedupUserPrompt(allFindings)                             │
+│       ├── provider.review() → LLM call                                       │
+│       ├── Parse attempt 1 → parseDedupedFindings()                           │
+│       ├── Parse attempt 2 (retry) on failure                                 │
+│       └── Degraded fallback: buildUnverifiedFallback() + mechanical dedup    │
+│                                                                              │
+│  Output: StructuredReview { summary, findings[], unverified? }               │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 6: POST-PROCESSING & OUTPUT                                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  filterFindingsToDiff(structured, diff)                                      │
+│       │  Only keep findings where file:line lands on a changed line          │
+│       │  parseDiffForCommentTargets() → valid line map                       │
+│       │                                                                      │
+│       ▼                                                                      │
+│  formatReviewMarkdown(opts)                                                  │
+│       │  • Header: PR info, provider, mode                                   │
+│       │  • Unverified banner (if judge failed)                               │
+│       │  • Failed specialists warning                                        │
+│       │  • Critical issues alert                                             │
+│       │  • Findings by category + stats (tokens, cost, API calls)            │
+│       │                                                                      │
+│       ▼                                                                      │
+│  postReviewComment(token, prNumber, markdown)                                │
+│       │  Upsert by HTML marker; embed state when state_store=comment-marker  │
+│       │                                                                      │
+│       ▼                                                                      │
+│  postInlineReview(token, prNumber, diff, findings)                           │
+│       │  Map to valid diff lines; dedup against existing bot comments        │
+│       │                                                                      │
+│       ▼                                                                      │
+│  Persist state (gist backend) + set action outputs                           │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -115,40 +269,251 @@ PR Review/
 ├── action.yml                    # GitHub Action metadata (inputs, outputs, entry point)
 ├── package.json                  # Dependencies and scripts
 ├── tsconfig.json                 # TypeScript configuration
+├── ARCHITECTURE.md               # This file
 ├── dist/
 │   └── index.js                  # Bundled output (ncc build)
 ├── src/
 │   ├── index.ts                  # Entry point — orchestrates full pipeline
-│   ├── config.ts                 # Action inputs, env vars, severity rubric, JSON schemas
-│   ├── findings.ts               # Finding types, JSON parsing, validation, dedup
+│   │
+│   ├── config/                   # Centralized configuration layer
+│   │   ├── index.ts              # Barrel re-export
+│   │   ├── app.ts                # loadConfig, ReviewConfig, severity rubric, JSON schemas
+│   │   ├── file-rules/           # File-level allow/ignore/rules
+│   │   │   ├── allowed-extensions.ts
+│   │   │   ├── ignore-patterns.ts
+│   │   │   ├── rules.ts          # Per-filetype review hints + risk weights
+│   │   │   └── index.ts
+│   │   ├── prompts/              # All prompt builders
+│   │   │   ├── shared.ts         # buildSharedContext, buildPrMetadata, CATEGORY_LABELS
+│   │   │   ├── specialist.ts     # Specialist system/user prompts + injection guards
+│   │   │   ├── judge.ts          # Judge dedup prompts
+│   │   │   ├── guidelines/       # Built-in review rules per category
+│   │   │   │   ├── security.ts
+│   │   │   │   ├── performance.ts  # Used as default `code` guidelines
+│   │   │   │   └── index.ts
+│   │   │   └── index.ts
+│   │   └── tools/                # On-demand tool definitions
+│   │       ├── definitions.ts    # TOOL_INSTRUCTIONS, TOOL_CATEGORIES, MAX_TOOL_HOPS
+│   │       └── index.ts
+│   │
+│   ├── filter/                   # File filtering (glob matching, binary detection)
+│   │   ├── file-filter.ts
+│   │   └── index.ts
+│   │
+│   ├── context/
+│   │   ├── index.ts              # Barrel export
+│   │   ├── diff/                 # Diff parsing, scoring, context assembly
+│   │   │   ├── loader.ts         # splitDiffByFile, prepareDiffForReview, comment targets
+│   │   │   ├── scorer.ts         # scoreFile, RISK_PATH_PATTERNS, THRESHOLDS
+│   │   │   ├── builder.ts        # buildReviewContext, buildFileSummary
+│   │   │   ├── blast-radius.ts   # applyBlastRadiusScoring
+│   │   │   ├── types.ts
+│   │   │   └── index.ts
+│   │   └── on-demand/            # Specialist tool loop + reference analysis
+│   │       ├── tools.ts          # read_file, search_text, find_references
+│   │       ├── tool-loop.ts      # Multi-hop tool loop + caller subagents
+│   │       └── index.ts
+│   │
+│   ├── agents/
+│   │   ├── index.ts              # Public API (re-exports runReview)
+│   │   ├── orchestrator.ts       # Fan-out → judge → diff filter → format
+│   │   ├── specialist.ts         # Specialist runner (tool loop or single-shot)
+│   │   ├── judge.ts              # Dedup with parse retry + unverified fallback
+│   │   └── types.ts              # SpecialistResult, ReviewResult, TokenUsage
+│   │
+│   ├── output/
+│   │   ├── findings.ts           # Finding types, JSON parsing, validation, dedup
+│   │   ├── format.ts             # PR comment markdown rendering
+│   │   └── index.ts
+│   │
+│   ├── providers/                # LLM provider implementations
+│   │   ├── index.ts              # createProvider factory
+│   │   ├── types.ts              # AIProvider interface
+│   │   ├── anthropic.ts          # Claude API (prompt caching via cache_control)
+│   │   ├── openai.ts             # OpenAI Chat Completions (json_object mode)
+│   │   └── azure.ts              # Azure OpenAI (deployment URL parsing)
+│   │
+│   ├── github/
+│   │   ├── index.ts
+│   │   ├── client.ts             # Octokit factory
+│   │   ├── types.ts              # PullRequestData, FetchPROptions
+│   │   ├── pr-data.ts            # Fetch PR metadata, diff, changed files
+│   │   ├── file-contents.ts      # Fetch full file contents from head branch
+│   │   └── comments.ts           # Upsert summary comment, post inline comments
+│   │
+│   ├── state/
+│   │   ├── index.ts
+│   │   └── store.ts              # GistStateStore, comment-marker, factory
+│   │
+│   ├── cli/
+│   │   └── local-review.ts       # CLI for local testing
+│   │
 │   ├── redact.ts                 # Secret redaction before LLM calls
 │   ├── sanitize.ts               # Error sanitization in logs
 │   ├── retry.ts                  # Retry + timeout wrapper for LLM API calls
 │   ├── cost.ts                   # Approximate token cost estimation
-│   ├── agents/
-│   │   ├── orchestrator.ts       # Fan-out to specialists → judge → format
-│   │   ├── specialist.ts         # One LLM call per domain category
-│   │   ├── judge.ts              # Two-stage: dedup findings, then rewrite + summarize
-│   │   ├── prompts.ts            # System/user prompt builders with injection guards
-│   │   ├── format.ts             # Renders final PR comment markdown
-│   │   └── guidelines/           # Built-in review rules per category
-│   ├── context/
-│   │   ├── diff.ts               # Risk scoring, budget allocation, diff/file context
-│   │   └── ignore.ts             # Glob-based file filtering
-│   ├── github/
-│   │   ├── pr-data.ts            # Fetch PR metadata, diff, changed files
-│   │   ├── file-contents.ts      # Fetch full file contents from head branch
-│   │   └── comments.ts           # Upsert summary comment, post inline comments
-│   ├── providers/
-│   │   ├── index.ts              # Uniform AIProvider.review() interface
-│   │   ├── anthropic.ts          # Anthropic Claude API
-│   │   ├── openai.ts             # OpenAI Chat Completions
-│   │   └── azure.ts              # Azure OpenAI
+│   │
 │   └── __tests__/                # Node.js built-in test runner tests
+│
 └── .github/
     └── workflows/
-        └── ci.yml                # CI: lint, test, build; self-reviews PRs
+        └── ci.yml                # CI: lint, test, build
 ```
+
+---
+
+## Config Layer (`src/config/`)
+
+### `app.ts`
+
+Resolves action inputs → env vars → defaults into `ReviewConfig`. Defines token budgets, timeouts, severity rubric, and JSON output schemas shared by specialists and judge.
+
+Active categories:
+
+| Category | Default Guidelines | Tool Loop |
+|----------|-------------------|-----------|
+| `security` | `prompts/guidelines/security.ts` | Yes |
+| `code` | `prompts/guidelines/performance.ts` (covers correctness + perf) | Yes |
+| `custom` | User `repo_context` input | No (single-shot) |
+
+### `file-rules/allowed-extensions.ts`
+
+Controls **which files enter the review pipeline** at all. Whitelists 50+ extensions and special filenames (`Dockerfile`, `Makefile`, `Gemfile`, etc.).
+
+### `file-rules/ignore-patterns.ts`
+
+Files that are **never reviewed** regardless of extension: `node_modules/`, lock files, build outputs, `.env`, generated code, binaries, CI/docs paths, etc.
+
+### `file-rules/rules.ts`
+
+Per-filetype **review hints and risk weights** for 25 file types (package manifests, C/C++, Python, Terraform, shell, SQL, etc.). Exported via `getFileRules()`, `getFileRiskWeight()`, and `getFileReviewHints()`. These helpers are available for future prompt injection; the current scoring path uses path patterns in `context/diff/scorer.ts` rather than file-rule multipliers.
+
+### `prompts/`
+
+All LLM prompt construction lives here, separated from agent orchestration:
+
+- **shared.ts** — `buildSharedContext()`, `buildPrMetadata()`, `CATEGORY_LABELS`
+- **specialist.ts** — Role definitions, injection guards, HOW TO REVIEW steps
+- **judge.ts** — Three-condition duplicate rule, merge semantics
+
+### `tools/definitions.ts`
+
+Defines the on-demand tool protocol appended to security/code specialist system prompts:
+
+| Tool | Purpose |
+|------|---------|
+| `read_file` | Fetch a file not included in the shared context |
+| `search_text` | Regex/literal search across reviewable files |
+| `find_references` | Semantic (ts-morph), syntactic (tree-sitter), or text-match reference lookup |
+
+`TOOL_CATEGORIES = { security, code }`. `MAX_TOOL_HOPS = 3`.
+
+---
+
+## On-Demand Context Tools (`src/context/on-demand/`)
+
+Security and code specialists can request additional context before returning findings. This replaces a single monolithic prompt with a multi-hop loop:
+
+```
+Specialist prompt + shared context
+        │
+        ▼
+   ┌─────────┐     action: "tool"      ┌──────────────┐
+   │ LLM hop │ ──────────────────────► │ executeTool  │
+   └─────────┘                         │ read/search/ │
+        ▲                              │ find_refs    │
+        │     tool results appended    └──────┬───────┘
+        │                                     │
+        │         multiple ref hits?          ▼
+        │                              ┌──────────────┐
+        │                              │ Caller       │
+        │                              │ subagents    │
+        │                              │ (parallel)   │
+        │                              └──────────────┘
+        │
+        ▼
+   action: "done" → findings JSON
+```
+
+### Reference analysis (`tools.ts`)
+
+| Language | Engine | Reference source |
+|----------|--------|-----------------|
+| TypeScript / JavaScript | `ts-morph` | `semantic` |
+| Python | `tree-sitter-python` | `syntactic` |
+| Go | `tree-sitter-go` | `syntactic` |
+| Other | Regex scan | `text-match` |
+
+`ToolCache` deduplicates file reads, searches, and reference lookups within a single PR review run. The same cache is shared across specialists and the blast-radius scoring pass.
+
+### Caller subagents (`tool-loop.ts`)
+
+When `find_references` returns multiple candidates, parallel subagent calls assess each caller site independently:
+
+```json
+{ "breaks": "yes" | "no" | "uncertain", "why": "one-line reason" }
+```
+
+Verdicts are appended to the next tool-loop hop so the specialist can decide whether an API/signature change is breaking.
+
+---
+
+## Context Building Strategy
+
+```
+                      File Arrives
+                          │
+                          ▼
+                 ┌─────────────────┐
+                 │ isAllowedFile() │ ← config/file-rules/allowed-extensions.ts
+                 └────────┬────────┘
+                          │ blocked → skip
+                          ▼
+                 ┌─────────────────┐
+                 │shouldIgnoreFile()│ ← filter/file-filter.ts
+                 └────────┬────────┘
+                          │ ignored → skip
+                          ▼
+                 ┌─────────────────┐
+                 │  isBinaryFile() │
+                 └────────┬────────┘
+                          │ binary → skip content fetch
+                          ▼
+                 ┌─────────────────┐
+                 │   scoreFile()   │ ← context/diff/scorer.ts
+                 └────────┬────────┘
+                          ▼
+                 ┌─────────────────┐
+                 │ Blast radius    │ ← context/diff/blast-radius.ts
+                 │ scoring boost   │
+                 └────────┬────────┘
+                          │
+      ┌───────────────────┼───────────────────┐
+      ▼                   ▼                   ▼
+   HIGH RISK          MEDIUM RISK         LOW RISK
+   (≥ 0.6)            (0.3 – 0.6)         (< 0.3)
+      │                   │                   │
+  <diff> + <file>      <diff> only          Excluded
+  + caller refs
+```
+
+### Risk scoring factors (`scorer.ts`)
+
+| Factor | Score Impact |
+|--------|-------------|
+| Auth/payment/secret paths | 0.95 |
+| Admin/internal paths | 0.85 |
+| Migration/schema paths | 0.80 |
+| Config/settings paths | 0.75 |
+| Middleware/util/shared paths | 0.75 |
+| Router/controller/handler paths | 0.60 |
+| New file bonus | +0.15 |
+| 300+ changed lines | +0.15 |
+| 100+ changed lines | +0.10 |
+| 50+ changed lines | +0.05 |
+| Delete-only changes | −0.10 |
+| Test files | capped at 0.2 |
+| Blast-radius callers found | effectiveScore +0.25 (min medium+0.15) |
 
 ---
 
@@ -157,23 +522,27 @@ PR Review/
 | Module | Path | Responsibility |
 |--------|------|----------------|
 | **Entry** | `src/index.ts` | Top-level pipeline: config → fetch PR → review → post comments |
-| **Config** | `src/config.ts` | Resolves action inputs, env vars, defaults; JSON schema + severity rubric |
-| **Orchestrator** | `src/agents/orchestrator.ts` | Fan-out to specialists, collect results, run judge, format output |
-| **Specialist** | `src/agents/specialist.ts` | One LLM call per domain category; parses JSON findings |
-| **Judge** | `src/agents/judge.ts` | Two-stage: deduplicate findings, then rewrite messages + summary |
-| **Prompts** | `src/agents/prompts.ts` | System/user prompt builders with injection guards |
-| **Format** | `src/agents/format.ts` | Renders final PR markdown (findings, failures, cost stats) |
-| **PR Data** | `src/github/pr-data.ts` | Fetches PR metadata, diff, changed files; filters ignored paths |
-| **File Contents** | `src/github/file-contents.ts` | Fetches full file contents from PR head branch (concurrent, max 10) |
+| **Config/App** | `src/config/app.ts` | Resolves inputs, env vars, defaults; JSON schema + severity rubric |
+| **Config/File Rules** | `src/config/file-rules/` | Allowed extensions, ignore patterns, per-filetype hints |
+| **Config/Prompts** | `src/config/prompts/` | All system/user prompt builders with injection guards |
+| **Config/Tools** | `src/config/tools/` | Tool-loop protocol definitions |
+| **Filter** | `src/filter/file-filter.ts` | Glob matching, binary detection, diff filtering |
+| **Context/Diff** | `src/context/diff/` | Diff parsing, risk scoring, blast radius, budget allocation |
+| **Context/On-Demand** | `src/context/on-demand/` | Tool loop, reference analysis, caller subagents |
+| **Orchestrator** | `src/agents/orchestrator.ts` | Fan-out → judge → diff filter → format |
+| **Specialist** | `src/agents/specialist.ts` | Tool-loop or single-shot LLM call per category |
+| **Judge** | `src/agents/judge.ts` | Deduplicate findings with parse retry + fallback |
+| **Findings** | `src/output/findings.ts` | Structured finding model; parsing, filtering, dedup |
+| **Format** | `src/output/format.ts` | Renders final PR markdown |
+| **PR Data** | `src/github/pr-data.ts` | Fetches PR metadata, diff, changed files |
+| **File Contents** | `src/github/file-contents.ts` | Fetches full file contents (concurrent, max 10) |
 | **Comments** | `src/github/comments.ts` | Upserts summary comment; posts inline review comments |
-| **Context** | `src/context/diff.ts` | Risk-scores files, allocates token budget, builds diff/file sections |
-| **Ignore** | `src/context/ignore.ts` | Glob-based file filtering (lockfiles, dist, images, etc.) |
-| **Providers** | `src/providers/` | Uniform `AIProvider` interface over Anthropic, OpenAI, Azure |
-| **Findings** | `src/findings.ts` | Structured finding model; parsing, filtering, dedup, max 8 cap |
+| **Providers** | `src/providers/` | Uniform `AIProvider` over Anthropic, OpenAI, Azure |
 | **Redact** | `src/redact.ts` | Secret redaction before sending to LLMs |
 | **Sanitize** | `src/sanitize.ts` | Strips API keys from failure messages in logs |
-| **Retry** | `src/retry.ts` | Exponential backoff on 429/5xx/timeouts for LLM API calls |
+| **Retry** | `src/retry.ts` | Exponential backoff on 429/5xx/timeouts |
 | **Cost** | `src/cost.ts` | Approximate token cost estimation for review footer |
+| **State** | `src/state/store.ts` | Persists `last_reviewed_sha` (gist or comment marker) |
 
 ---
 
@@ -181,48 +550,83 @@ PR Review/
 
 ### Specialists (Stage 1 — Parallel)
 
-Up to 5 specialist agents run concurrently via `Promise.allSettled`:
+Up to 3 specialist agents run concurrently via `Promise.allSettled`:
 
-| Specialist | Focus |
-|------------|-------|
-| **Security** | Vulnerabilities, auth issues, injection risks, secret exposure |
-| **Tests** | Missing tests, coverage gaps, test quality (uses test-prioritized file scoring) |
-| **Performance** | N+1 queries, memory leaks, unnecessary computation, scalability |
-| **Code Quality** | Readability, maintainability, error handling, best practices |
-| **Custom** | User-defined review guidelines |
+| Specialist | Focus | Mode |
+|------------|-------|------|
+| **Security** | Injection, XSS, secrets, auth gaps, crypto misuse | Tool loop |
+| **Code** | Correctness, error handling, performance, race conditions | Tool loop |
+| **Custom** | User-defined guidelines from `repo_context` | Single-shot |
 
 Each specialist receives:
-- A **system prompt** with role definition, domain-specific guidelines, injection guard, and JSON output schema
-- A **user prompt** with PR metadata + risk-scored context + review instructions
+- A **system prompt** with: injection guard → role → HOW TO REVIEW → guidelines → JSON schema → review policy
+- A **user prompt** with: PR metadata → file summary → risk-scored diff/file sections → review instruction
 
-### Judge (Stage 2 — Sequential)
+Security and code specialists are instructed to call `find_references` before flagging signature/API changes.
 
-Two sequential LLM calls consolidate specialist output:
+### Judge (Stage 2)
 
-1. **Dedup** — Merges true duplicates across specialists while preserving all fields
-2. **Rewrite** — Tightens finding messages, writes PR summary, reconciles onto deduped list
+A single LLM call consolidates specialist output:
+
+1. **Dedup** — Three-condition duplicate rule (same function + same guard + same failure mode)
+2. **Parse retry** — If JSON parsing fails, retry once with the same prompt
+3. **Degraded fallback** — Mechanical dedup by category+file+line with an unverified banner
 
 ---
 
-## Context Building Strategy
+## Security Controls
 
-Files are risk-scored to fit within the ~75k token budget:
+| Control | Description |
+|---------|-------------|
+| **Secret Redaction** | Secrets stripped from diffs and file contents before LLM calls (`redact.ts`) |
+| **Injection Guards** | Untrusted PR content wrapped in `<pr_description>`, `<diff>`, `<file>` delimiters |
+| **Error Sanitization** | API keys stripped from failure messages in logs (`sanitize.ts`) |
+| **Degraded Judge Fallback** | Unparseable judge output → specialist findings published with unverified banner |
+| **Diff-Anchored Findings** | Only findings with `file:line` on a changed line survive post-processing |
+| **Vague Finding Filter** | Findings starting with "Ensure/Consider/Verify" are auto-dropped |
+| **Low Confidence Filter** | Findings with `confidence: "low"` are auto-dropped |
+| **File Filtering Pipeline** | Three-layer gate: allowed extensions → ignore patterns → binary detection |
+
+---
+
+## Finding Lifecycle
 
 ```
-                     Risk Scoring
-                          │
-      ┌───────────────────┼───────────────────┐
-      ▼                   ▼                   ▼
-   High Risk           Medium Risk         Low Risk
-   (score ≥ 0.6)       (score ≥ 0.3)       (score < 0.3)
-      │                   │                   │
-  Diff + Full File     Diff Only           Excluded
+File arrives in PR
+  → isAllowedFile()? → shouldIgnoreFile()? → isBinaryFile()?
+    → Risk-scored + blast-radius boosted → budgeted into shared context
+      → Specialist raw JSON (or tool-loop multi-hop)
+        → parseSpecialistFindings(): filter vague/low-confidence/missing snippet
+          → Judge dedup: three-condition rule, merge duplicates
+            → Parse retry on failure → degraded mechanical dedup
+              → filterFindingsToDiff(): only diff-touching lines survive
+                → Final StructuredReview
+                  → Posted as summary comment + inline comments
 ```
 
-### Risk scoring factors:
-- **Path patterns** — `auth`, `payment`, `migration`, `security` boost the score
-- **Line count** — More changed lines = higher risk
-- **New file bonus** — Newly added files get a score boost
+---
+
+## Incremental Review (State Persistence)
+
+```
+Push 1 (PR opened):
+  No previous state → full diff (base..head)
+  After review → persist last_reviewed_sha = head_sha_1
+
+Push 2 (synchronize):
+  Read state → last_reviewed_sha = head_sha_1
+  Incremental diff: head_sha_1..head_sha_2
+  After review → persist last_reviewed_sha = head_sha_2
+
+Force-push (SHA unreachable):
+  Fall back to full diff, persist new head SHA
+```
+
+| Backend | Config | How it works |
+|---------|--------|--------------|
+| **comment-marker** (default) | `state_store: comment-marker` | `<!-- ai-pr-reviewer-state: {...} -->` embedded in review comment |
+| **gist** | `state_store: gist` + `state_gist_id` | JSON keyed by `repo-pr_number` in a GitHub Gist |
+| **none** | `state_store: none` | No persistence; always full diff |
 
 ---
 
@@ -234,10 +638,12 @@ Files are risk-scored to fit within the ~75k token budget:
 |-----------|---------|
 | `pulls.get` | PR metadata + unified diff |
 | `pulls.listFiles` | Changed file list |
+| `repos.compareCommitsWithBasehead` | Incremental diff between SHAs |
 | `repos.getContent` | Full file contents at PR head ref |
-| `issues.listComments` / `createComment` / `updateComment` | Summary review comment (upsert by HTML marker) |
+| `git.getCommit` | Verify SHA reachability (force-push detection) |
+| `issues.listComments` / `createComment` / `updateComment` | Summary review comment (upsert) |
 | `pulls.createReview` / `createReviewComment` | Inline diff comments |
-| `pulls.listReviewComments` | Dedup existing inline comments |
+| `gists.get` / `gists.update` | State persistence (gist backend) |
 
 **Permissions required:** `contents: read`, `pull-requests: write`
 
@@ -245,115 +651,28 @@ Files are risk-scored to fit within the ~75k token budget:
 
 | Provider | SDK | Notes |
 |----------|-----|-------|
-| **Anthropic** | `@anthropic-ai/sdk` | `messages.create`, temp=0, supports `cache_control` blocks |
+| **Anthropic** | `@anthropic-ai/sdk` | `messages.create`, temp=0, `cache_control` blocks |
 | **OpenAI** | `openai` | Chat Completions, `response_format: json_object` |
-| **Azure OpenAI** | `openai` (`AzureOpenAI`) | Parses endpoint URL, uses deployment name as model |
+| **Azure OpenAI** | `openai` (`AzureOpenAI`) | Parses endpoint URL, deployment name as model |
 
-All providers go through `withRetry()` — 3 attempts, exponential backoff, configurable timeout.
-
----
-
-## Security Controls
-
-| Control | Description |
-|---------|-------------|
-| **Secret Redaction** | Secrets are stripped from diffs and file contents before sending to LLMs (`redact.ts`) |
-| **Injection Guards** | Untrusted PR content wrapped in `<pr_description>`, `<diff>`, `<file>` delimiters |
-| **Error Sanitization** | API keys stripped from failure messages in logs (`sanitize.ts`) |
-| **Fail-Closed Judge** | If judge parsing fails after retry, PR is treated as having critical issues |
-
----
-
-## Finding Lifecycle
-
-```
-Specialist raw JSON
-  → filter low confidence, vague messages, missing file/snippet
-    → Judge dedup: preserve fields, merge true duplicates
-      → Judge rewrite: tighten messages, write summary, reconcile
-        → Final StructuredReview: max 8 findings (critical > warning > suggestion)
-          → Posted as summary comment + inline comments
-```
-
----
-
-## Dependencies
-
-### Runtime
-- `@actions/core` — Logging, inputs/outputs, failure signaling
-- `@actions/github` — GitHub context + Octokit client
-- `@anthropic-ai/sdk` — Claude API (with prompt caching)
-- `openai` — OpenAI Chat Completions + Azure OpenAI
-
-### Dev
-- `typescript` — Strict TS compilation
-- `@vercel/ncc` — Bundles into single `dist/index.js`
-- `@types/node` — Node 22 types
+All providers go through `withRetry()` — 3 attempts, exponential backoff, 120s timeout per call.
 
 ---
 
 ## Key Design Decisions
 
-1. **Multi-agent over monolith** — Parallel domain experts plus a judge for quality control, rather than a single monolithic prompt
-2. **Context over diff-only** — Full file contents for high-risk files so reviewers see complete functions/APIs
-3. **Budget-aware context** — Risk scoring prevents blowing token limits on large PRs
-4. **Quality gates at multiple layers** — Injection guards, specialist filters, judge dedup/rewrite, vague-message regex filters, 8-finding cap
-5. **Resilient fan-out** — `Promise.allSettled` so one crashed specialist doesn't kill the pipeline; failures surfaced in PR comment
-6. **Fail-closed judge** — Unverified findings are never silently published if the judge fails
-7. **Single-file distribution** — `ncc` bundle makes the action self-contained with no runtime `npm install`
-8. **Incremental review via persisted state** — `last_reviewed_sha` is stored per PR (via comment marker or GitHub Gist) to diff only new changes on `synchronize` events, preventing the infinite-findings loop
-
----
-
-## Incremental Review (State Persistence)
-
-To prevent the infinite-findings loop where the reviewer re-reviews already-seen code on every push, the action persists `last_reviewed_sha` per PR.
-
-### How it works
-
-```
-Push 1 (PR opened):
-  No previous state → full diff (base..head)
-  After review → persist last_reviewed_sha = head_sha_1
-
-Push 2 (synchronize):
-  Read state → last_reviewed_sha = head_sha_1
-  Incremental diff: head_sha_1..head_sha_2
-  Only new/changed code sent to specialists
-  After review → persist last_reviewed_sha = head_sha_2
-
-Force-push (SHA unreachable):
-  Read state → last_reviewed_sha = old_sha (gone)
-  Detect unreachable commit → fall back to full diff
-  After review → persist last_reviewed_sha = new_head_sha
-```
-
-### State store backends
-
-| Backend | Config | How it works | Tradeoffs |
-|---------|--------|--------------|-----------|
-| **comment-marker** (default) | `state_store: comment-marker` | Embeds `<!-- ai-pr-reviewer-state: {...} -->` in the review comment | Zero config, no extra permissions, but tied to comment lifecycle |
-| **gist** | `state_store: gist` + `state_gist_id: <id>` | Stores JSON files in a GitHub Gist, keyed by `repo-pr_number` | Durable, inspectable, requires a Gist + token with gist scope |
-| **none** | `state_store: none` | No persistence, always full diff | Stateless but vulnerable to the review loop |
-
-### Data flow with state
-
-```
-pull_request (synchronize)
-  │
-  ▼
-Read state store → last_reviewed_sha
-  │
-  ├── SHA found + reachable → compare API: last_sha..head_sha (incremental)
-  ├── SHA found + unreachable → full PR diff (force-push recovery)
-  └── No state → full PR diff (first review)
-  │
-  ▼
-Normal review pipeline (context → specialists → judge → output)
-  │
-  ▼
-Write state store → last_reviewed_sha = head_sha
-```
+1. **Multi-agent over monolith** — Parallel domain experts plus a judge for quality control
+2. **Consolidated code specialist** — Correctness and performance reviewed together to reduce redundant LLM calls
+3. **On-demand tools** — Security/code specialists fetch references and extra files only when needed
+4. **Blast-radius scoring** — Caller context included for files that depend on high-risk changes
+5. **Three-layer file filtering** — Allowed extensions → ignore patterns → binary detection
+6. **Context over diff-only** — Full file contents for high-risk files so reviewers see complete functions/APIs
+7. **Budget-aware context** — Risk scoring prevents blowing token limits on large PRs
+8. **Quality gates at multiple layers** — Injection guards, specialist filters, judge dedup, diff-anchoring
+9. **Resilient fan-out** — `Promise.allSettled` so one crashed specialist doesn't kill the pipeline
+10. **Judge parse retry + fallback** — One retry on parse failure; then mechanical dedup with unverified banner
+11. **Single-file distribution** — `ncc` bundle makes the action self-contained
+12. **Incremental review via persisted state** — `last_reviewed_sha` prevents re-reviewing unchanged code
 
 ---
 
@@ -364,4 +683,21 @@ Write state store → last_reviewed_sha = head_sha
 | Source entry | `src/index.ts` → calls `main()` at module load |
 | Compiled entry | `dist/index.js` (produced by `ncc build src/index.ts`) |
 | Action entry | `action.yml` → `runs.main: dist/index.js` on Node 20 |
+| CLI entry | `src/cli/local-review.ts` → `npm run local-review` |
 
+---
+
+## Dependencies
+
+### Runtime
+- `@actions/core` — Logging, inputs/outputs, failure signaling
+- `@actions/github` — GitHub context + Octokit client
+- `@anthropic-ai/sdk` — Claude API (with prompt caching)
+- `openai` — OpenAI Chat Completions + Azure OpenAI
+- `tree-sitter` / `tree-sitter-python` / `tree-sitter-go` — Syntactic reference analysis
+- `ts-morph` — Semantic reference analysis for TypeScript/JavaScript
+
+### Dev
+- `typescript` — Strict TS compilation
+- `@vercel/ncc` — Bundles into single `dist/index.js`
+- `@types/node` — Node 22 types

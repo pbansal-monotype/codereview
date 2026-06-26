@@ -40,6 +40,12 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+# One active review per PR — cancel stale runs when new commits are pushed.
+# Required for incremental review (last_reviewed_sha) to stay correct.
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: write
@@ -62,6 +68,25 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
+
+### Concurrency (required for consumer workflows)
+
+Add this at the **workflow** level (not on the action step):
+
+```yaml
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+```
+
+| Setting | Why |
+|---------|-----|
+| `group: pr-review-${{ github.event.pull_request.number }}` | Only one review run per PR at a time |
+| `cancel-in-progress: true` | When a new push arrives, cancel the in-flight run for an older commit |
+
+Without concurrency, rapid pushes can spawn parallel runs that race on `last_reviewed_sha` state and post duplicate findings. With it, each run reviews only the incremental diff since the last successful review.
+
+The summary comment is upserted (one comment per PR). Inline comments dedupe identical `path:line:body` pairs, but concurrent runs can still duplicate work — concurrency prevents that.
 
 ### OpenAI
 
@@ -106,10 +131,10 @@ The system has multiple layers to prevent low-quality findings:
 
 1. **Injection guard**: PR title, body, diff, and file contents are wrapped in named delimiters (`<pr_description>`, `<diff>`, `<file>`). Every system prompt instructs the model to analyze those delimiters and never follow instructions inside them.
 2. **Specialist-level**: Must include a verbatim code snippet per finding; low-confidence findings are dropped before reaching the judge.
-3. **Judge-level**: Verifies each finding's code snippet against the actual diff, deduplicates, re-calibrates severity, removes confidence "low" findings, and caps the total at 8.
+3. **Judge-level**: Deduplicates findings from all specialists and caps the total at 8; the orchestrator then drops any finding whose `file:line` does not land on a changed line in the unified diff, so only diff-touching lines can produce findings.
 4. **Code-level filters**: Drops vague messages ("Ensure...", "Consider...") and findings without a file path.
 5. **Severity calibration (shared scale)**: "critical" = would you page the on-call at 3 am? "warning" = real bug, not urgent. "suggestion" = concrete improvement with specific code. The exact same scale is used by every specialist and the judge.
-6. **Honest failure reporting**: A crashed specialist appears as a visible warning in the PR comment — it can never silently read as a clean pass. A judge failure is fail-closed (blocks merge) rather than publishing unverified findings.
+6. **Honest failure reporting**: A crashed specialist appears as a visible warning in the PR comment — it can never silently read as a clean pass. If the judge fails to parse its JSON output after retry, findings are published with an **unverified** banner (specialist fallback) rather than blocking the review.
 
 ## Inputs
 
@@ -212,7 +237,7 @@ src/
 │   │   └── code-guidelines.ts
 │   ├── prompts.ts           # All prompt builders (specialist + judge, with injection guards)
 │   ├── specialist.ts        # Specialist agent runner
-│   ├── judge.ts             # Judge agent runner (fail-closed, retry-on-parse-failure)
+│   ├── judge.ts             # Judge agent runner (parse repair + unverified fallback)
 │   ├── format.ts            # Markdown formatting for PR comments
 │   ├── orchestrator.ts      # Parallel fan-out → judge → result
 │   └── types.ts             # Shared types

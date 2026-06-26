@@ -10,13 +10,12 @@ describe('scoreFile', () => {
     assert.ok(score < THRESHOLDS.MEDIUM_RISK);
   });
 
-  it('boosts test files for the tests specialist', () => {
+  it('gives test files a low fixed score', () => {
     const score = scoreFile(
       'src/router/healthcheck/get/index.test.js',
       SMALL_DIFF,
-      { boostTestFiles: true },
     );
-    assert.ok(score >= THRESHOLDS.HIGH_RISK);
+    assert.ok(score < THRESHOLDS.MEDIUM_RISK);
   });
 
   it('scores implementation files above test files for non-test specialists', () => {
@@ -38,8 +37,8 @@ describe('scoreFile', () => {
   });
 
   it('boosts new unpatterned source files into high-risk (diff+content)', () => {
-    const modified = scoreFile('src/lib/initWfgFromConfig.js', SMALL_DIFF);
-    const added = scoreFile('src/lib/initWfgFromConfig.js', SMALL_DIFF, { isNew: true });
+    const modified = scoreFile('src/features/initWfgFromConfig.js', SMALL_DIFF);
+    const added = scoreFile('src/features/initWfgFromConfig.js', SMALL_DIFF, { isNew: true });
     assert.ok(modified < THRESHOLDS.HIGH_RISK);
     assert.ok(added >= THRESHOLDS.HIGH_RISK);
     assert.ok(added > modified);

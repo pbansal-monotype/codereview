@@ -17,7 +17,9 @@ export interface StructuredReview {
     unverified?: boolean;
 }
 export interface ParseStructuredReviewOptions {
-    /** When true (default), return at most MAX_FINDINGS after sorting. */
+    /**
+     * @deprecated Findings are no longer capped; this option is ignored.
+     */
     capFindings?: boolean;
     /** When true (default), drop findings with vague phrasing. */
     filterVague?: boolean;
@@ -25,13 +27,8 @@ export interface ParseStructuredReviewOptions {
     filterLowConfidence?: boolean;
 }
 export declare function parseStructuredReview(raw: string, options?: ParseStructuredReviewOptions): StructuredReview;
-/** Parse judge rewrite output — preserve every finding, no cap or quality filtering. */
-export declare function parseJudgeRewriteReview(raw: string): StructuredReview;
-/**
- * Apply rewritten messages onto the deduped input list.
- * Input count is the source of truth — unmatched findings keep their original message.
- */
-export declare function reconcileRewrittenFindings(input: Finding[], rewritten: StructuredReview): StructuredReview;
+/** Build the final review from deduplicated judge output. */
+export declare function buildJudgeReviewFromDedup(findings: Finding[]): StructuredReview;
 /**
  * Parse output from a specialist agent where category is known externally.
  * Simpler schema: { findings: [{ severity, confidence, file, line, message }] }
@@ -44,5 +41,14 @@ export declare function sortFindingsForReview(findings: Finding[]): Finding[];
  * Accepts { "findings": [...] } (required by OpenAI/Azure json_object mode) or a bare array.
  */
 export declare function parseDedupedFindings(raw: string): Finding[];
+/** Merge findings by category + file + line, keeping the highest-severity entry. */
+export declare function mechanicalDedup(findings: Finding[]): Finding[];
+/** Build a degraded review when the judge fails to parse after retry. */
+export declare function buildUnverifiedFallback(findings: Finding[], reason: string): StructuredReview;
+/**
+ * Salvage complete finding objects from truncated judge JSON
+ * (e.g. output cut off mid-array or mid-object).
+ */
+export declare function salvageTruncatedFindingsJson(raw: string): string | null;
 export declare function extractJson(text: string): string;
 export declare function formatFindingsMarkdown(structured: StructuredReview, categoryLabels: Record<string, string>): string;

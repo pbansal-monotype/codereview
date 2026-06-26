@@ -7,9 +7,11 @@ import {
   hasCriticalFindings,
   extractJson,
   sortFindingsForReview,
-  parseJudgeRewriteReview,
-  reconcileRewrittenFindings,
-} from '../findings';
+  salvageTruncatedFindingsJson,
+  mechanicalDedup,
+  buildUnverifiedFallback,
+  buildJudgeReviewFromDedup,
+} from '../output/findings';
 
 describe('parseStructuredReview', () => {
   it('parses valid JSON with confidence field', () => {
@@ -115,7 +117,7 @@ describe('parseStructuredReview', () => {
     assert.equal(result.findings[0].file, 'src/api.ts');
   });
 
-  it('caps findings at 8 by default and prioritises by severity', () => {
+  it('does not cap findings by default and prioritises by severity', () => {
     const findings = [];
     for (let i = 0; i < 12; i++) {
       findings.push({
@@ -128,7 +130,7 @@ describe('parseStructuredReview', () => {
       });
     }
     const result = parseStructuredReview(JSON.stringify({ summary: 'many issues', findings }));
-    assert.ok(result.findings.length <= 8);
+    assert.equal(result.findings.length, 12);
     assert.equal(result.findings[0].severity, 'critical');
     assert.equal(result.findings[1].severity, 'critical');
   });
@@ -252,61 +254,19 @@ describe('sortFindingsForReview', () => {
   });
 });
 
-describe('parseJudgeRewriteReview', () => {
-  it('returns all findings without capping', () => {
+describe('buildJudgeReviewFromDedup', () => {
+  it('summarizes all deduped findings without capping', () => {
     const findings = Array.from({ length: 12 }, (_, i) => ({
       category: 'code',
-      severity: 'warning',
-      confidence: 'high',
+      severity: (i === 0 ? 'critical' : 'warning') as 'critical' | 'warning',
+      confidence: 'high' as const,
       file: `src/file${i}.ts`,
       line: i + 1,
-      message: `Rewritten message ${i}. Failure mode ${i}. Fix ${i}.`,
+      message: `Issue ${i}`,
     }));
-    const review = parseJudgeRewriteReview(
-      JSON.stringify({ summary: 'Summary text.', findings }),
-    );
+    const review = buildJudgeReviewFromDedup(findings);
     assert.equal(review.findings.length, 12);
-  });
-});
-
-describe('reconcileRewrittenFindings', () => {
-  it('preserves input count when rewrite omits findings', () => {
-    const input = [
-      {
-        category: 'security',
-        severity: 'critical' as const,
-        confidence: 'high' as const,
-        file: 'src/a.ts',
-        line: 1,
-        message: 'original one',
-      },
-      {
-        category: 'code',
-        severity: 'warning' as const,
-        confidence: 'medium' as const,
-        file: 'src/b.ts',
-        line: 2,
-        message: 'original two',
-      },
-    ];
-    const rewritten = {
-      summary: 'PR summary.',
-      findings: [
-        {
-          category: 'security',
-          severity: 'critical' as const,
-          confidence: 'high' as const,
-          file: 'src/a.ts',
-          line: 1,
-          message: 'rewritten one',
-        },
-      ],
-    };
-    const result = reconcileRewrittenFindings(input, rewritten);
-    assert.equal(result.findings.length, 2);
-    assert.equal(result.findings[0].message, 'rewritten one');
-    assert.equal(result.findings[1].message, 'original two');
-    assert.equal(result.summary, 'PR summary.');
+    assert.match(review.summary, /12 issue\(s\): 1 critical, 11 warning/);
   });
 });
 
@@ -395,5 +355,56 @@ describe('parseSpecialistFindings', () => {
     assert.equal(findings.length, 1);
     assert.equal(findings[0].category, 'security');
     assert.equal(findings[0].severity, 'critical');
+  });
+});
+
+describe('salvageTruncatedFindingsJson', () => {
+  it('salvages complete objects from truncated findings array', () => {
+    const complete = {
+      category: 'security',
+      severity: 'critical',
+      confidence: 'high',
+      file: 'src/a.ts',
+      line: 1,
+      message: 'Issue A',
+    };
+    const truncated = `Here is the review:\n{"findings":[${JSON.stringify(complete)},{"category":"code","severity":"warning","file":"src/b.ts","line":2,"mess`;
+    const salvaged = salvageTruncatedFindingsJson(truncated);
+    assert.ok(salvaged);
+    const findings = parseDedupedFindings(salvaged!);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].file, 'src/a.ts');
+  });
+
+  it('parses prose-wrapped JSON via salvage path', () => {
+    const raw =
+      'Sure! Here is the JSON:\n```json\n{"summary":"ok","findings":[{"category":"security","severity":"warning","confidence":"high","file":"src/x.ts","line":3,"message":"msg"}]}\n```\nHope that helps!';
+    const review = parseStructuredReview(raw);
+    assert.equal(review.findings.length, 1);
+    assert.equal(review.summary, 'ok');
+  });
+});
+
+describe('mechanicalDedup', () => {
+  it('keeps highest severity for same category+file+line', () => {
+    const deduped = mechanicalDedup([
+      { category: 'security', severity: 'warning', confidence: 'high', file: 'src/a.ts', line: 10, message: 'warn' },
+      { category: 'security', severity: 'critical', confidence: 'high', file: 'src/a.ts', line: 10, message: 'crit' },
+    ]);
+    assert.equal(deduped.length, 1);
+    assert.equal(deduped[0].severity, 'critical');
+  });
+});
+
+describe('buildUnverifiedFallback', () => {
+  it('marks dedup fallback as unverified', () => {
+    const review = buildUnverifiedFallback(
+      [
+        { category: 'code', severity: 'warning', confidence: 'high', file: 'src/a.ts', line: 1, message: 'a' },
+      ],
+      'parse error',
+    );
+    assert.equal(review.unverified, true);
+    assert.match(review.summary, /dedup failed/i);
   });
 });
