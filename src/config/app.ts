@@ -17,8 +17,6 @@ export interface ReviewConfig {
   githubToken: string;
   categories: {
     security: CategoryGuidelines;
-    tests: CategoryGuidelines;
-    performance: CategoryGuidelines;
     code: CategoryGuidelines;
     custom: CategoryGuidelines;
   };
@@ -131,8 +129,6 @@ const ENV_VAR_NAMES: Record<string, string> = {
   repo_context: 'REPO_CONTEXT',
   review_policy: 'REVIEW_POLICY',
   security: 'SECURITY_GUIDELINES',
-  tests: 'TEST_GUIDELINES',
-  performance: 'PERFORMANCE_GUIDELINES',
   code: 'CODE_GUIDELINES',
   ignore_paths: 'IGNORE_PATHS',
   github_token: 'GITHUB_TOKEN',
@@ -174,7 +170,7 @@ export function loadConfig(): ReviewConfig {
 
   const model = resolve('model') || DEFAULT_MODELS[provider];
 
-  const enabledCategories = resolve('review_categories', 'security,tests,performance,code')
+  const enabledCategories = resolve('review_categories', 'security,code')
     .split(',')
     .map((c) => c.trim().toLowerCase())
     .filter(Boolean);
@@ -210,8 +206,6 @@ export function loadConfig(): ReviewConfig {
     githubToken,
     categories: {
       security: resolveGuidelines('security'),
-      tests: resolveGuidelines('tests'),
-      performance: resolveGuidelines('performance'),
       code: resolveGuidelines('code'),
       custom: {
         enabled: enabledCategories.includes('custom'),

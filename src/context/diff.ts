@@ -46,8 +46,6 @@ export interface ReviewContext {
 }
 
 export interface BuildReviewContextOptions {
-  /** When true, test-file scores are boosted so the tests specialist treats them as high priority. */
-  boostTestFiles?: boolean;
   /** True when the diff hunk is a newly added file (not a modification). */
   isNew?: boolean;
 }
@@ -76,7 +74,6 @@ export const TEST_PATH_PATTERNS = [
 ];
 
 const TEST_FILE_LOW_SCORE = 0.2;
-const TEST_FILE_BOOSTED_SCORE = 0.8;
 
 export function isTestFile(filepath: string): boolean {
   return TEST_PATH_PATTERNS.some((pattern) => pattern.test(filepath));
@@ -265,10 +262,9 @@ export function scoreFile(
   diffHunk: string,
   options: BuildReviewContextOptions = {},
 ): number {
-  // Test files are handled separately — path patterns like "router" or "service"
-  // must not inflate test file scores above implementation files.
+  // Test files get a low fixed score — they are deprioritized for review context.
   if (isTestFile(filePath)) {
-    return options.boostTestFiles ? TEST_FILE_BOOSTED_SCORE : TEST_FILE_LOW_SCORE;
+    return TEST_FILE_LOW_SCORE;
   }
 
   let patternScore: number | null = null;

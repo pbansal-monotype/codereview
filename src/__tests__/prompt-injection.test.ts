@@ -41,9 +41,7 @@ function makeConfig(overrides: Partial<ReviewConfig> = {}): ReviewConfig {
     githubToken: 'test',
     categories: {
       security: { enabled: true, guidelines: 'Check for vulnerabilities.' },
-      tests: { enabled: true, guidelines: 'Check for test coverage.' },
-      performance: { enabled: true, guidelines: 'Check for N+1.' },
-      code: { enabled: true, guidelines: 'Check code quality.' },
+      code: { enabled: true, guidelines: 'Check code quality and performance.' },
       custom: { enabled: false, guidelines: '' },
     },
     repoContext: '',

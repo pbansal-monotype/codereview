@@ -78,13 +78,7 @@ export async function runReview(
     `Fan-out to ${activeCategories.length} specialists: ${categoryIds.map((id) => CATEGORY_LABELS[id] || id).join(', ')}`,
   );
 
-  // Build shared context once per ordering variant:
-  //   - Default (test files deprioritized) — used by all specialists except tests.
-  //   - Test-prioritized — used by the tests specialist so test files are never dropped first.
-  const sharedContext = buildSharedContext(pr, config, false);
-  const testSharedContext = categoryIds.includes('tests')
-    ? buildSharedContext(pr, config, true)
-    : sharedContext;
+  const sharedContext = buildSharedContext(pr, config);
 
   // Stage 1: Fan out to all specialist agents in parallel via allSettled so
   // a single crashed specialist never aborts the rest of the pipeline.
@@ -96,7 +90,7 @@ export async function runReview(
         cat.guidelines,
         pr,
         config,
-        cat.id === 'tests' ? testSharedContext : sharedContext,
+        sharedContext,
       ),
     ),
   );

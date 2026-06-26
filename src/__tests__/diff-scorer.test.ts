@@ -10,13 +10,12 @@ describe('scoreFile', () => {
     assert.ok(score < THRESHOLDS.MEDIUM_RISK);
   });
 
-  it('boosts test files for the tests specialist', () => {
+  it('gives test files a low fixed score', () => {
     const score = scoreFile(
       'src/router/healthcheck/get/index.test.js',
       SMALL_DIFF,
-      { boostTestFiles: true },
     );
-    assert.ok(score >= THRESHOLDS.HIGH_RISK);
+    assert.ok(score < THRESHOLDS.MEDIUM_RISK);
   });
 
   it('scores implementation files above test files for non-test specialists', () => {

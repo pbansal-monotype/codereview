@@ -13,21 +13,15 @@ import { buildReviewContext, buildFileSummary } from '../context/diff';
 
 export const CATEGORY_LABELS: Record<string, string> = {
   security: 'Security',
-  tests: 'Test Coverage',
-  performance: 'Performance',
-  code: 'Code Guidelines',
+  code: 'Code Quality & Performance',
   custom: 'Custom Review',
 };
 
 const SPECIALIST_ROLES: Record<string, string> = {
   security:
     'application security engineer specializing in vulnerability detection, exploitation patterns, and secure coding',
-  tests:
-    'QA architect specializing in test strategy, coverage analysis, and test reliability',
-  performance:
-    'performance engineer reviewing one pull request. Your ONLY job is to find performance issues: scalability, query efficiency, runtime cost. Ignore everything else (style, security, correctness-unrelated-to-perf, tests) — other specialists own those.',
   code:
-    'senior software engineer specializing in code quality, correctness, error handling, and best practices',
+    'senior software engineer specializing in code quality, correctness, performance, error handling, and best practices. You review for both correctness issues (bugs, race conditions, resource leaks) AND performance issues (N+1 queries, unbounded memory, blocking operations).',
   custom:
     'senior engineer conducting a focused review based on the provided guidelines',
 };
@@ -82,29 +76,22 @@ Return JSON.`;
 /**
  * Builds the shared context — PR metadata, then the risk-scored file sections
  * (each containing the diff hunk and, for high-risk files, the full file content).
- *
- * @param prioritizeTests  When true (tests specialist), test-file scores are boosted
- *   so they receive high-priority treatment. When false (all other specialists),
- *   test files fall below the medium-risk threshold and are skipped entirely.
  */
 export function buildSharedContext(
   pr: PullRequestData,
   config: ReviewConfig,
-  prioritizeTests = false,
 ): string {
   const fileContentsMap: Record<string, string> = {};
   for (const f of pr.fileContents) {
     fileContentsMap[f.path] = f.content;
   }
 
-  // Reserve ~2 000 chars for the metadata block + SPECIALIST_TAIL overhead.
   const budget = tokensToChars(MAX_PROMPT_TOKENS) - 2000 - SPECIALIST_TAIL.length;
 
   const { context, includedFiles, skippedFiles, stats } = buildReviewContext(
     pr.diff,
     fileContentsMap,
     budget,
-    { boostTestFiles: prioritizeTests },
   );
 
   core.info(
