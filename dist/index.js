@@ -266409,19 +266409,54 @@ function parseCallerVerdict(text) {
 /***/ }),
 
 /***/ 8464:
-/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
 
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ToolCache = void 0;
 exports.createToolContext = createToolContext;
 exports.readFile = readFile;
 exports.searchText = searchText;
 exports.findReferences = findReferences;
+exports.normalizeRepoPath = normalizeRepoPath;
 exports.fileImportsTarget = fileImportsTarget;
 exports.extractSymbolsFromFile = extractSymbolsFromFile;
 exports.findBlastRadiusCallers = findBlastRadiusCallers;
+const core = __importStar(__nccwpck_require__(7484));
 const ts_morph_1 = __nccwpck_require__(8721);
 const filter_1 = __nccwpck_require__(8854);
 const tree_sitter_loader_1 = __nccwpck_require__(5019);
@@ -266558,33 +266593,39 @@ function extOf(filePath) {
     return dot < 0 ? '' : filePath.slice(dot).toLowerCase();
 }
 function findReferences(ctx, symbol, filePath) {
-    const cacheKey = `${symbol}\0${filePath}`;
+    const normalizedPath = normalizeRepoPath(filePath);
+    const cacheKey = `${symbol}\0${normalizedPath}`;
     const cached = ctx.cache.getReferences(cacheKey);
     if (cached)
         return cached;
-    const ext = extOf(filePath);
+    const ext = extOf(normalizedPath);
     let results;
     if (TS_EXTENSIONS.has(ext)) {
-        results = findTsReferences(ctx, symbol, filePath);
+        results = findTsReferences(ctx, symbol, normalizedPath);
     }
     else if (ext === '.py' || ext === '.pyi') {
         results = (0, tree_sitter_loader_1.getTreeSitterParsers)()
-            ? findTreeSitterReferences(ctx, symbol, filePath, 'python')
-            : textMatchReferences(ctx, symbol, filePath, '**/*.py');
+            ? findTreeSitterReferences(ctx, symbol, normalizedPath, 'python')
+            : textMatchReferences(ctx, symbol, normalizedPath, '**/*.py');
     }
     else if (ext === '.go') {
         results = (0, tree_sitter_loader_1.getTreeSitterParsers)()
-            ? findTreeSitterReferences(ctx, symbol, filePath, 'go')
-            : textMatchReferences(ctx, symbol, filePath, '**/*.go');
+            ? findTreeSitterReferences(ctx, symbol, normalizedPath, 'go')
+            : textMatchReferences(ctx, symbol, normalizedPath, '**/*.go');
     }
     else {
-        results = searchText(ctx, `\\b${escapeRegex(symbol)}\\b`, undefined).filter((r) => r.file !== filePath || !isDefinitionLine(ctx.fileContents[r.file], r.line, symbol));
+        results = searchText(ctx, `\\b${escapeRegex(symbol)}\\b`, undefined).filter((r) => r.file !== normalizedPath ||
+            !isDefinitionLine(ctx.fileContents[r.file], r.line, symbol));
     }
     ctx.cache.setReferences(cacheKey, results);
     return results;
 }
 function escapeRegex(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+/** Repo-relative paths from GitHub never have a leading slash; normalize LLM/tool input. */
+function normalizeRepoPath(filePath) {
+    return filePath.trim().replace(/^\/+/, '');
 }
 function isDefinitionLine(content, line, symbol) {
     const lineText = content.split('\n')[line - 1] ?? '';
@@ -266599,6 +266640,7 @@ let tsProject = null;
 let tsProjectFingerprint = '';
 function getTsProject(ctx) {
     const paths = Object.keys(ctx.fileContents)
+        .map(normalizeRepoPath)
         .filter((p) => TS_EXTENSIONS.has(extOf(p)))
         .sort()
         .join('\0');
@@ -266606,16 +266648,32 @@ function getTsProject(ctx) {
         return tsProject;
     tsProject = new ts_morph_1.Project({ useInMemoryFileSystem: true });
     for (const [path, content] of Object.entries(ctx.fileContents)) {
-        if (TS_EXTENSIONS.has(extOf(path))) {
-            tsProject.createSourceFile(path, content, { overwrite: true });
+        const normalized = normalizeRepoPath(path);
+        if (TS_EXTENSIONS.has(extOf(normalized))) {
+            tsProject.createSourceFile(normalized, content, { overwrite: true });
         }
     }
     tsProjectFingerprint = paths;
     return tsProject;
 }
+function resolveTsSourceFile(project, filePath) {
+    const normalized = normalizeRepoPath(filePath);
+    return (project.getSourceFile(normalized) ??
+        project.getSourceFile(`/${normalized}`));
+}
 function findTsReferences(ctx, symbol, filePath) {
+    try {
+        return findTsReferencesInner(ctx, symbol, filePath);
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        core.debug(`[find_references] ts-morph failed for ${symbol} in ${filePath}: ${msg} — using text-match`);
+        return textMatchReferences(ctx, symbol, filePath, undefined);
+    }
+}
+function findTsReferencesInner(ctx, symbol, filePath) {
     const project = getTsProject(ctx);
-    const sourceFile = project.getSourceFile(filePath);
+    const sourceFile = resolveTsSourceFile(project, filePath);
     if (!sourceFile)
         return [];
     const namedDecl = sourceFile.getFunction(symbol) ??
@@ -266635,7 +266693,9 @@ function findTsReferences(ctx, symbol, filePath) {
                 continue;
             const node = ref.getNode();
             const sf = node.getSourceFile();
-            const path = sf.getFilePath().replace(/^\//, '');
+            const path = normalizeRepoPath(sf.getFilePath());
+            if (!ctx.fileContents[path] && !ctx.fileContents[`/${path}`])
+                continue;
             if (!isSearchableFile(path, ctx.ignorePatterns))
                 continue;
             results.push({
@@ -266657,13 +266717,21 @@ function findExportAliasReferences(sourceFile, symbol, ctx) {
         if (!('findReferences' in exportDecl) || typeof exportDecl.findReferences !== 'function') {
             continue;
         }
-        const refEntries = exportDecl.findReferences();
+        let refEntries;
+        try {
+            refEntries = exportDecl.findReferences();
+        }
+        catch {
+            continue;
+        }
         for (const entry of refEntries) {
             for (const ref of entry.getReferences()) {
                 if (ref.isDefinition())
                     continue;
                 const node = ref.getNode();
-                const path = node.getSourceFile().getFilePath().replace(/^\//, '');
+                const path = normalizeRepoPath(node.getSourceFile().getFilePath());
+                if (!ctx.fileContents[path] && !ctx.fileContents[`/${path}`])
+                    continue;
                 if (!isSearchableFile(path, ctx.ignorePatterns))
                     continue;
                 results.push({

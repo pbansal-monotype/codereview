@@ -61,6 +61,36 @@ describe('context tools', () => {
     assert.ok(refs.some((r) => r.source === 'semantic'));
   });
 
+  it('find_references accepts leading-slash paths from tool/LLM input', () => {
+    const refs = findReferences(ctx, 'validate', '/src/util/helper.ts');
+    assert.ok(refs.some((r) => r.file === 'src/auth/handler.ts'));
+  });
+
+  it('find_references does not throw when referenced files are outside incremental scope', () => {
+    const partialCtx = createToolContext({
+      'src/routes/orders.js': [
+        "const db = require('./database');",
+        'function getOrder(id) { return db.find(id); }',
+        'module.exports = { getOrder };',
+      ].join('\n'),
+    });
+    assert.doesNotThrow(() => {
+      const refs = findReferences(partialCtx, 'getOrder', '/src/routes/orders.js');
+      assert.ok(Array.isArray(refs));
+    });
+  });
+
+  it('buildReviewContext does not throw for partial JS project during blast radius', () => {
+    const diff =
+      'diff --git a/src/routes/orders.js b/src/routes/orders.js\n' +
+      '--- a/src/routes/orders.js\n+++ b/src/routes/orders.js\n@@ -1 +1 @@\n' +
+      '-function getOrder() {}\n+function getOrder(id) { return id; }\n';
+    const contents = {
+      'src/routes/orders.js': 'function getOrder(id) { return id; }\nmodule.exports = { getOrder };\n',
+    };
+    assert.doesNotThrow(() => buildReviewContext(diff, contents, 50_000));
+  });
+
   it('search_text finds pattern matches', () => {
     const results = searchText(ctx, 'checkAuth');
     assert.ok(results.length >= 1);

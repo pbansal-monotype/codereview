@@ -27,6 +27,8 @@ export declare function createToolContext(fileContents: Record<string, string>, 
 export declare function readFile(ctx: ToolContext, filePath: string): string | null;
 export declare function searchText(ctx: ToolContext, pattern: string, fileGlob?: string): ReferenceLocation[];
 export declare function findReferences(ctx: ToolContext, symbol: string, filePath: string): ReferenceLocation[];
+/** Repo-relative paths from GitHub never have a leading slash; normalize LLM/tool input. */
+export declare function normalizeRepoPath(filePath: string): string;
 /** Resolve whether caller content imports or requires the target module path. */
 export declare function fileImportsTarget(callerContent: string, callerPath: string, targetPath: string): boolean;
 /** Extract exported/changed symbol names from a file's diff hunk and content. */

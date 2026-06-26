@@ -1,3 +1,4 @@
+import * as core from '@actions/core';
 import { Project, type SourceFile } from 'ts-morph';
 import { isAllowedFile, shouldIgnoreFile, isBinaryFile } from '../../filter';
 import { getTreeSitterParsers, type TreeSitterLang } from './tree-sitter-loader';
@@ -180,26 +181,29 @@ export function findReferences(
   symbol: string,
   filePath: string,
 ): ReferenceLocation[] {
-  const cacheKey = `${symbol}\0${filePath}`;
+  const normalizedPath = normalizeRepoPath(filePath);
+  const cacheKey = `${symbol}\0${normalizedPath}`;
   const cached = ctx.cache.getReferences(cacheKey);
   if (cached) return cached;
 
-  const ext = extOf(filePath);
+  const ext = extOf(normalizedPath);
   let results: ReferenceLocation[];
 
   if (TS_EXTENSIONS.has(ext)) {
-    results = findTsReferences(ctx, symbol, filePath);
+    results = findTsReferences(ctx, symbol, normalizedPath);
   } else if (ext === '.py' || ext === '.pyi') {
     results = getTreeSitterParsers()
-      ? findTreeSitterReferences(ctx, symbol, filePath, 'python')
-      : textMatchReferences(ctx, symbol, filePath, '**/*.py');
+      ? findTreeSitterReferences(ctx, symbol, normalizedPath, 'python')
+      : textMatchReferences(ctx, symbol, normalizedPath, '**/*.py');
   } else if (ext === '.go') {
     results = getTreeSitterParsers()
-      ? findTreeSitterReferences(ctx, symbol, filePath, 'go')
-      : textMatchReferences(ctx, symbol, filePath, '**/*.go');
+      ? findTreeSitterReferences(ctx, symbol, normalizedPath, 'go')
+      : textMatchReferences(ctx, symbol, normalizedPath, '**/*.go');
   } else {
     results = searchText(ctx, `\\b${escapeRegex(symbol)}\\b`, undefined).filter(
-      (r) => r.file !== filePath || !isDefinitionLine(ctx.fileContents[r.file], r.line, symbol),
+      (r) =>
+        r.file !== normalizedPath ||
+        !isDefinitionLine(ctx.fileContents[r.file], r.line, symbol),
     );
   }
 
@@ -209,6 +213,11 @@ export function findReferences(
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Repo-relative paths from GitHub never have a leading slash; normalize LLM/tool input. */
+export function normalizeRepoPath(filePath: string): string {
+  return filePath.trim().replace(/^\/+/, '');
 }
 
 function isDefinitionLine(content: string, line: number, symbol: string): boolean {
@@ -222,7 +231,7 @@ function textMatchReferences(
   ctx: ToolContext,
   symbol: string,
   defFilePath: string,
-  glob: string,
+  glob?: string,
 ): ReferenceLocation[] {
   return searchText(ctx, `\\b${escapeRegex(symbol)}\\b`, glob).filter(
     (r) =>
@@ -238,6 +247,7 @@ let tsProjectFingerprint = '';
 
 function getTsProject(ctx: ToolContext): Project {
   const paths = Object.keys(ctx.fileContents)
+    .map(normalizeRepoPath)
     .filter((p) => TS_EXTENSIONS.has(extOf(p)))
     .sort()
     .join('\0');
@@ -245,12 +255,21 @@ function getTsProject(ctx: ToolContext): Project {
 
   tsProject = new Project({ useInMemoryFileSystem: true });
   for (const [path, content] of Object.entries(ctx.fileContents)) {
-    if (TS_EXTENSIONS.has(extOf(path))) {
-      tsProject.createSourceFile(path, content, { overwrite: true });
+    const normalized = normalizeRepoPath(path);
+    if (TS_EXTENSIONS.has(extOf(normalized))) {
+      tsProject.createSourceFile(normalized, content, { overwrite: true });
     }
   }
   tsProjectFingerprint = paths;
   return tsProject;
+}
+
+function resolveTsSourceFile(project: Project, filePath: string): SourceFile | undefined {
+  const normalized = normalizeRepoPath(filePath);
+  return (
+    project.getSourceFile(normalized) ??
+    project.getSourceFile(`/${normalized}`)
+  );
 }
 
 function findTsReferences(
@@ -258,8 +277,24 @@ function findTsReferences(
   symbol: string,
   filePath: string,
 ): ReferenceLocation[] {
+  try {
+    return findTsReferencesInner(ctx, symbol, filePath);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    core.debug(
+      `[find_references] ts-morph failed for ${symbol} in ${filePath}: ${msg} — using text-match`,
+    );
+    return textMatchReferences(ctx, symbol, filePath, undefined);
+  }
+}
+
+function findTsReferencesInner(
+  ctx: ToolContext,
+  symbol: string,
+  filePath: string,
+): ReferenceLocation[] {
   const project = getTsProject(ctx);
-  const sourceFile = project.getSourceFile(filePath);
+  const sourceFile = resolveTsSourceFile(project, filePath);
   if (!sourceFile) return [];
 
   const namedDecl =
@@ -282,7 +317,8 @@ function findTsReferences(
       if (ref.isDefinition()) continue;
       const node = ref.getNode();
       const sf = node.getSourceFile();
-      const path = sf.getFilePath().replace(/^\//, '');
+      const path = normalizeRepoPath(sf.getFilePath());
+      if (!ctx.fileContents[path] && !ctx.fileContents[`/${path}`]) continue;
       if (!isSearchableFile(path, ctx.ignorePatterns)) continue;
       results.push({
         file: path,
@@ -309,12 +345,18 @@ function findExportAliasReferences(
     if (!('findReferences' in exportDecl) || typeof exportDecl.findReferences !== 'function') {
       continue;
     }
-    const refEntries = exportDecl.findReferences();
+    let refEntries;
+    try {
+      refEntries = exportDecl.findReferences();
+    } catch {
+      continue;
+    }
     for (const entry of refEntries) {
       for (const ref of entry.getReferences()) {
         if (ref.isDefinition()) continue;
         const node = ref.getNode();
-        const path = node.getSourceFile().getFilePath().replace(/^\//, '');
+        const path = normalizeRepoPath(node.getSourceFile().getFilePath());
+        if (!ctx.fileContents[path] && !ctx.fileContents[`/${path}`]) continue;
         if (!isSearchableFile(path, ctx.ignorePatterns)) continue;
         results.push({
           file: path,

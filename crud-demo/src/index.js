@@ -4,6 +4,7 @@ const express = require('express');
 const { pool } = require('./db');
 const usersRouter = require('./routes/users');
 const productsRouter = require('./routes/products');
+const ordersRouter = require('./routes/orders');
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -21,6 +22,7 @@ app.get('/health', async (_req, res) => {
 
 app.use('/api/users', usersRouter);
 app.use('/api/products', productsRouter);
+app.use('/api/orders', ordersRouter);
 
 app.use((err, _req, res, _next) => {
   console.error(err);

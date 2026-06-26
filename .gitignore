@@ -6,4 +6,6 @@ dist-test/
 Debug
 test.md
 docs/
+crud-demo
+crud-demo/*
 crud-demo/
