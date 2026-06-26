@@ -271,8 +271,10 @@ Use `pull_request_target` instead of `pull_request` for fork PRs (the action onl
 npm install        # install dependencies
 npm run lint       # type-check with tsc
 npm test           # run tests
-npm run build      # compile to dist/index.js with ncc
+npm run build      # compile to dist/index.js with ncc (run on Linux Node 24 for releases)
 ```
+
+**Releasing the action:** `dist/` includes a native `tree-sitter` binary. Build on **Linux with Node 24** (same as `action.yml`) so GitHub runners can load it — e.g. in CI or `docker run --rm -v "$PWD":/app -w /app node:24-bookworm npm ci && npm run build`. If the binding is missing or wrong-platform, the action still runs and falls back to text-match for Python/Go references.
 
 ## License
 

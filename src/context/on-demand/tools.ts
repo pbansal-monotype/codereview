@@ -1,8 +1,7 @@
 import { Project, type SourceFile } from 'ts-morph';
-import Parser from 'tree-sitter';
-import Python from 'tree-sitter-python';
-import Go from 'tree-sitter-go';
 import { isAllowedFile, shouldIgnoreFile, isBinaryFile } from '../../filter';
+import { getTreeSitterParsers, type TreeSitterLang } from './tree-sitter-loader';
+import type Parser from 'tree-sitter';
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -191,9 +190,13 @@ export function findReferences(
   if (TS_EXTENSIONS.has(ext)) {
     results = findTsReferences(ctx, symbol, filePath);
   } else if (ext === '.py' || ext === '.pyi') {
-    results = findTreeSitterReferences(ctx, symbol, filePath, 'python');
+    results = getTreeSitterParsers()
+      ? findTreeSitterReferences(ctx, symbol, filePath, 'python')
+      : textMatchReferences(ctx, symbol, filePath, '**/*.py');
   } else if (ext === '.go') {
-    results = findTreeSitterReferences(ctx, symbol, filePath, 'go');
+    results = getTreeSitterParsers()
+      ? findTreeSitterReferences(ctx, symbol, filePath, 'go')
+      : textMatchReferences(ctx, symbol, filePath, '**/*.go');
   } else {
     results = searchText(ctx, `\\b${escapeRegex(symbol)}\\b`, undefined).filter(
       (r) => r.file !== filePath || !isDefinitionLine(ctx.fileContents[r.file], r.line, symbol),
@@ -213,6 +216,19 @@ function isDefinitionLine(content: string, line: number, symbol: string): boolea
   return new RegExp(
     `(?:function|class|const|let|var|def|func)\\s+${escapeRegex(symbol)}\\b`,
   ).test(lineText);
+}
+
+function textMatchReferences(
+  ctx: ToolContext,
+  symbol: string,
+  defFilePath: string,
+  glob: string,
+): ReferenceLocation[] {
+  return searchText(ctx, `\\b${escapeRegex(symbol)}\\b`, glob).filter(
+    (r) =>
+      r.file !== defFilePath ||
+      !isDefinitionLine(ctx.fileContents[r.file] ?? '', r.line, symbol),
+  );
 }
 
 // ─── TypeScript / JavaScript (ts-morph) ────────────────────────────
@@ -313,15 +329,7 @@ function findExportAliasReferences(
   return dedupeReferences(results);
 }
 
-// ─── Python / Go (tree-sitter) ─────────────────────────────────────
-
-const pythonParser = new Parser();
-pythonParser.setLanguage(Python as Parser.Language);
-
-const goParser = new Parser();
-goParser.setLanguage(Go as Parser.Language);
-
-type TreeSitterLang = 'python' | 'go';
+// ─── Python / Go (tree-sitter, lazy-loaded) ───────────────────────
 
 function findTreeSitterReferences(
   ctx: ToolContext,
@@ -329,8 +337,11 @@ function findTreeSitterReferences(
   filePath: string,
   lang: TreeSitterLang,
 ): ReferenceLocation[] {
-  const parser = lang === 'python' ? pythonParser : goParser;
-  const identifierType = lang === 'python' ? 'identifier' : 'identifier';
+  const loaded = getTreeSitterParsers();
+  if (!loaded) return [];
+
+  const parser = lang === 'python' ? loaded.python : loaded.go;
+  const identifierType = 'identifier';
   const results: ReferenceLocation[] = [];
 
   for (const [path, content] of Object.entries(ctx.fileContents)) {

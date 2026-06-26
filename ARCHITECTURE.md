@@ -1,6 +1,6 @@
 # AI PR Reviewer — Architecture
 
-A TypeScript GitHub Action that automates pull request code review using a multi-agent LLM pipeline. Runs on Node 20, bundled with `@vercel/ncc` into a single `dist/index.js`.
+A TypeScript GitHub Action that automates pull request code review using a multi-agent LLM pipeline. Runs on Node 24, bundled with `@vercel/ncc` into a single `dist/index.js`.
 
 ---
 
@@ -750,7 +750,7 @@ All providers go through `withRetry()` — 3 attempts, exponential backoff, 120s
 |-------|------|
 | Source entry | `src/index.ts` → calls `main()` at module load |
 | Compiled entry | `dist/index.js` (produced by `ncc build src/index.ts`) |
-| Action entry | `action.yml` → `runs.main: dist/index.js` on Node 20 |
+| Action entry | `action.yml` → `runs.main: dist/index.js` on Node 24 |
 | CLI entry | `src/cli/local-review.ts` → `npm run local-review` |
 
 ## Related docs

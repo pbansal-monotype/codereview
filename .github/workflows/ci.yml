@@ -73,7 +73,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
 
       - run: npm ci
@@ -86,6 +86,9 @@ jobs:
 
       - name: Verify dist bundle exists
         run: test -f dist/index.js
+
+      - name: Verify tree-sitter native binding loads on Linux Node 24
+        run: node -e "require('tree-sitter'); console.log('tree-sitter ok')"
 
   review:
     name: AI Review

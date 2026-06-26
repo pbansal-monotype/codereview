@@ -266409,13 +266409,10 @@ function parseCallerVerdict(text) {
 /***/ }),
 
 /***/ 8464:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ToolCache = void 0;
 exports.createToolContext = createToolContext;
@@ -266426,10 +266423,8 @@ exports.fileImportsTarget = fileImportsTarget;
 exports.extractSymbolsFromFile = extractSymbolsFromFile;
 exports.findBlastRadiusCallers = findBlastRadiusCallers;
 const ts_morph_1 = __nccwpck_require__(8721);
-const tree_sitter_1 = __importDefault(__nccwpck_require__(8072));
-const tree_sitter_python_1 = __importDefault(__nccwpck_require__(4433));
-const tree_sitter_go_1 = __importDefault(__nccwpck_require__(9693));
 const filter_1 = __nccwpck_require__(8854);
+const tree_sitter_loader_1 = __nccwpck_require__(5019);
 /** Per-PR-run in-memory cache shared across tools and blast-radius pass. */
 class ToolCache {
     fileCache = new Map();
@@ -266573,10 +266568,14 @@ function findReferences(ctx, symbol, filePath) {
         results = findTsReferences(ctx, symbol, filePath);
     }
     else if (ext === '.py' || ext === '.pyi') {
-        results = findTreeSitterReferences(ctx, symbol, filePath, 'python');
+        results = (0, tree_sitter_loader_1.getTreeSitterParsers)()
+            ? findTreeSitterReferences(ctx, symbol, filePath, 'python')
+            : textMatchReferences(ctx, symbol, filePath, '**/*.py');
     }
     else if (ext === '.go') {
-        results = findTreeSitterReferences(ctx, symbol, filePath, 'go');
+        results = (0, tree_sitter_loader_1.getTreeSitterParsers)()
+            ? findTreeSitterReferences(ctx, symbol, filePath, 'go')
+            : textMatchReferences(ctx, symbol, filePath, '**/*.go');
     }
     else {
         results = searchText(ctx, `\\b${escapeRegex(symbol)}\\b`, undefined).filter((r) => r.file !== filePath || !isDefinitionLine(ctx.fileContents[r.file], r.line, symbol));
@@ -266590,6 +266589,10 @@ function escapeRegex(s) {
 function isDefinitionLine(content, line, symbol) {
     const lineText = content.split('\n')[line - 1] ?? '';
     return new RegExp(`(?:function|class|const|let|var|def|func)\\s+${escapeRegex(symbol)}\\b`).test(lineText);
+}
+function textMatchReferences(ctx, symbol, defFilePath, glob) {
+    return searchText(ctx, `\\b${escapeRegex(symbol)}\\b`, glob).filter((r) => r.file !== defFilePath ||
+        !isDefinitionLine(ctx.fileContents[r.file] ?? '', r.line, symbol));
 }
 // ─── TypeScript / JavaScript (ts-morph) ────────────────────────────
 let tsProject = null;
@@ -266674,14 +266677,13 @@ function findExportAliasReferences(sourceFile, symbol, ctx) {
     }
     return dedupeReferences(results);
 }
-// ─── Python / Go (tree-sitter) ─────────────────────────────────────
-const pythonParser = new tree_sitter_1.default();
-pythonParser.setLanguage(tree_sitter_python_1.default);
-const goParser = new tree_sitter_1.default();
-goParser.setLanguage(tree_sitter_go_1.default);
+// ─── Python / Go (tree-sitter, lazy-loaded) ───────────────────────
 function findTreeSitterReferences(ctx, symbol, filePath, lang) {
-    const parser = lang === 'python' ? pythonParser : goParser;
-    const identifierType = lang === 'python' ? 'identifier' : 'identifier';
+    const loaded = (0, tree_sitter_loader_1.getTreeSitterParsers)();
+    if (!loaded)
+        return [];
+    const parser = lang === 'python' ? loaded.python : loaded.go;
+    const identifierType = 'identifier';
     const results = [];
     for (const [path, content] of Object.entries(ctx.fileContents)) {
         if (!isSearchableFile(path, ctx.ignorePatterns))
@@ -266873,6 +266875,94 @@ function findFirstSymbolLine(content, symbol) {
             return i + 1;
     }
     return 0;
+}
+
+
+/***/ }),
+
+/***/ 5019:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getTreeSitterParsers = getTreeSitterParsers;
+exports.resetTreeSitterLoaderForTests = resetTreeSitterLoaderForTests;
+const core = __importStar(__nccwpck_require__(7484));
+let loadState = 'pending';
+let parsers = null;
+/**
+ * Lazy-load tree-sitter native bindings. GitHub Actions runs Linux + Node 24;
+ * dist must be built on that target (see CI). If the .node addon is missing or
+ * built for the wrong OS/ABI, returns null and callers fall back to text-match.
+ */
+function getTreeSitterParsers() {
+    if (loadState === 'ready')
+        return parsers;
+    if (loadState === 'unavailable')
+        return null;
+    try {
+        // Dynamic require so a bad native binding does not crash module init.
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const Parser = __nccwpck_require__(8072);
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const Python = __nccwpck_require__(4433);
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const Go = __nccwpck_require__(9693);
+        const pythonParser = new Parser();
+        pythonParser.setLanguage(Python);
+        const goParser = new Parser();
+        goParser.setLanguage(Go);
+        parsers = { python: pythonParser, go: goParser };
+        loadState = 'ready';
+        return parsers;
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        core.warning(`tree-sitter native bindings unavailable (${msg}). ` +
+            'Python/Go reference lookup will use text-match fallback.');
+        loadState = 'unavailable';
+        parsers = null;
+        return null;
+    }
+}
+/** @internal Test-only reset */
+function resetTreeSitterLoaderForTests() {
+    loadState = 'pending';
+    parsers = null;
 }
 
 
