@@ -1,9 +1,9 @@
-// npx ts-node src/cli/local-review.ts --repo Monotype/service-web-font-kit-builder --pr 414
+// npx ts-node src/cli/local-review.ts --repo owner/name --pr 414 [--debug | --no-debug]
 import * as fs from 'fs';
 import * as path from 'path';
 import { loadConfig, MAX_FILE_SIZE } from '../config';
 import { createProvider } from '../providers';
-import { shouldIgnoreFile } from '../context/ignore';
+import { shouldIgnoreFile } from '../filter';
 import { prepareDiffForReview } from '../context/diff';
 import { fetchFileContents } from '../github/file-contents';
 import { getOctokit } from '../github/client';
@@ -26,9 +26,11 @@ function loadDotEnv(): void {
     process.env[key] = value;
   }
 }
-function parseArgs(argv: string[]): { repo: string; pr: number } {
+function parseArgs(argv: string[]): { repo: string; pr: number; debug: boolean } {
   let repo = '';
   let prStr = '';
+  let debug = true; // local-review is for testing — include full stats by default
+  const unknown: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -36,12 +38,30 @@ function parseArgs(argv: string[]): { repo: string; pr: number } {
       repo = argv[++i];
     } else if (arg === '--pr' && i + 1 < argv.length) {
       prStr = argv[++i];
+    } else if (arg === '--debug' || arg === '-d') {
+      debug = true;
+    } else if (arg === '--no-debug') {
+      debug = false;
+    } else if (arg === '--') {
+      // npm/ts-node argument separator — skip
+    } else if (arg.startsWith('--')) {
+      unknown.push(arg);
     }
+  }
+
+  if (unknown.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `Warning: unrecognized flag(s): ${unknown.join(', ')}` +
+      (unknown.some((f) => f.includes('deubg') || f.includes('debag'))
+        ? ' — did you mean --debug?'
+        : ''),
+    );
   }
 
   if (!repo || !prStr) {
     throw new Error(
-      'Usage: ts-node src/cli/local-review.ts --repo owner/name --pr 123',
+      'Usage: ts-node src/cli/local-review.ts --repo owner/name --pr 123 [--debug | --no-debug]',
     );
   }
 
@@ -50,7 +70,7 @@ function parseArgs(argv: string[]): { repo: string; pr: number } {
     throw new Error(`Invalid --pr value: "${prStr}"`);
   }
 
-  return { repo, pr };
+  return { repo, pr, debug };
 }
 
 async function buildPullRequestData(
@@ -140,7 +160,10 @@ async function main(): Promise<void> {
   try {
     loadDotEnv();
 
-    const { repo, pr } = parseArgs(process.argv.slice(2));
+    const { repo, pr, debug } = parseArgs(process.argv.slice(2));
+
+    // eslint-disable-next-line no-console
+    console.log(`Debug stats: ${debug ? 'on' : 'off'}`);
 
     const githubToken = process.env.GITHUB_TOKEN;
     if (!githubToken) {
@@ -164,7 +187,7 @@ async function main(): Promise<void> {
       config.ignorePatterns,
     );
 
-    const result = await runReview(provider, config, prData);
+    const result = await runReview(provider, config, prData, { debug });
 
     const outPath = path.resolve(process.cwd(), 'test.md');
     fs.writeFileSync(outPath, result.markdown, 'utf8');
@@ -173,7 +196,7 @@ async function main(): Promise<void> {
     console.log(`Wrote local review markdown to ${outPath}`);
     // eslint-disable-next-line no-console
     console.log(
-      `has_critical_issues=${result.hasCritical} findings_count=${result.structured?.findings.length ?? 0}`,
+      `has_critical_issues=${result.hasCritical} findings_count=${result.structured?.findings.length ?? 0}${debug ? ' (debug stats included)' : ''}`,
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

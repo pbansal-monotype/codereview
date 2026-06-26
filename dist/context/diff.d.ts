@@ -1,3 +1,4 @@
+import { ToolCache } from './tools';
 export interface RiskPattern {
     pattern: RegExp;
     score: number;
@@ -35,6 +36,10 @@ export interface ReviewContext {
 export interface BuildReviewContextOptions {
     /** True when the diff hunk is a newly added file (not a modification). */
     isNew?: boolean;
+    /** Shared per-PR tool cache — reused across context assembly and specialist tool loops. */
+    toolCache?: ToolCache;
+    /** Ignore patterns for blast-radius reference search. */
+    ignorePatterns?: string[];
 }
 export interface PrepareDiffOptions {
     redactSecrets: boolean;

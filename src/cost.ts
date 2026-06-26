@@ -46,3 +46,27 @@ export function estimateCost(
   if (cost < 0.001) return '<$0.001';
   return `~$${cost.toFixed(3)}`;
 }
+
+/** Format API call count for review stats — reflects variable tool-loop usage. */
+export function formatApiCallCount(
+  specialistResults: Array<{ categoryId: string; apiCalls: number }>,
+  judgeCalls = 1,
+): string {
+  const specialistTotal = specialistResults.reduce((sum, r) => sum + r.apiCalls, 0);
+  const total = specialistTotal + judgeCalls;
+
+  const perSpecialist = specialistResults
+    .map((r) => `${r.categoryId}=${r.apiCalls}`)
+    .join(', ');
+
+  if (specialistResults.length === 0) {
+    return `${total} (${judgeCalls} judge)`;
+  }
+
+  const minPossible = specialistResults.length + judgeCalls;
+  if (total === minPossible) {
+    return `${total} (${specialistResults.length} specialist + ${judgeCalls} judge)`;
+  }
+
+  return `${total} (${perSpecialist}; +${judgeCalls} judge)`;
+}

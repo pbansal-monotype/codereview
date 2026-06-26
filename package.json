@@ -25,6 +25,10 @@
     "@actions/github": "^6.0.0",
     "@anthropic-ai/sdk": "^0.39.0",
     "openai": "^4.77.0",
+    "tree-sitter": "^0.25.0",
+    "tree-sitter-go": "^0.25.0",
+    "tree-sitter-python": "^0.25.0",
+    "ts-morph": "^28.0.0",
     "yaml": "^2.7.0"
   },
   "devDependencies": {

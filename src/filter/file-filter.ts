@@ -1,5 +1,5 @@
-import { DEFAULT_IGNORE_PATTERNS, BINARY_EXTENSIONS } from '../config/ignore-patterns';
-import { isAllowedFile } from '../config/allowed-extensions';
+import { DEFAULT_IGNORE_PATTERNS, BINARY_EXTENSIONS } from '../config/file-rules/ignore-patterns';
+import { isAllowedFile } from '../config/file-rules/allowed-extensions';
 
 function globToRegex(glob: string): RegExp {
   const escaped = glob
@@ -69,15 +69,11 @@ export function filterDiffByFiles(diff: string, ignoredFiles: Set<string>): stri
   return kept.join('');
 }
 
-// ─── Binary file detection (skip content fetch) ───────────────────
-
 /** True when a file path has a binary/media extension and should not be fetched as text. */
 export function isBinaryFile(filePath: string): boolean {
   const dot = filePath.lastIndexOf('.');
   if (dot < 0) return false;
   return BINARY_EXTENSIONS.has(filePath.slice(dot).toLowerCase());
 }
-
-// ─── Allowed-file filter (re-export for convenience) ──────────────
 
 export { isAllowedFile };

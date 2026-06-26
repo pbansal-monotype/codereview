@@ -1,4 +1,4 @@
-import { Finding, StructuredReview } from '../findings';
+import { Finding, StructuredReview } from '../output/findings';
 export interface TokenUsage {
     input: number;
     output: number;
@@ -9,6 +9,12 @@ export interface SpecialistResult {
     tokens: TokenUsage;
     failed: boolean;
     error?: string;
+    /** Actual LLM API calls made by this specialist (includes tool-loop hops and subagents). */
+    apiCalls: number;
+}
+export interface ReviewRunOptions {
+    /** Include detailed context ranking, tool calls, and pipeline stats in review output. */
+    debug?: boolean;
 }
 export interface ReviewResult {
     markdown: string;

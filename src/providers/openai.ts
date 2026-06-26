@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import { parseStructuredReview } from '../findings';
+import { parseStructuredReview } from '../output/findings';
 import { withRetry } from '../retry';
 import { AIProvider, ReviewRequest, ReviewResponse } from './types';
 

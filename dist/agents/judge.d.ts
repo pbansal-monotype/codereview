@@ -1,5 +1,5 @@
 import { ReviewConfig } from '../config';
-import { StructuredReview } from '../findings';
+import { StructuredReview } from '../output/findings';
 import { AIProvider } from '../providers';
 import { SpecialistResult, TokenUsage } from './types';
 interface JudgeResult {

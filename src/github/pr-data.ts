@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { shouldIgnoreFile } from '../context/ignore';
+import { shouldIgnoreFile } from '../filter';
 import { prepareDiffForReview } from '../context/diff';
 import { MAX_FILE_SIZE } from '../config';
 import { getOctokit } from './client';

@@ -1,4 +1,4 @@
-export { parseIgnorePatterns, shouldIgnoreFile, filterDiffByFiles, isBinaryFile } from './ignore';
+export { parseIgnorePatterns, shouldIgnoreFile, filterDiffByFiles, isBinaryFile } from '../filter';
 export {
   parseDiffForCommentTargets,
   splitDiffByFile,
@@ -12,6 +12,24 @@ export {
   RISK_PATH_PATTERNS,
   TEST_PATH_PATTERNS,
 } from './diff';
+export {
+  ToolCache,
+  createToolContext,
+  readFile,
+  searchText,
+  findReferences,
+  fileImportsTarget,
+  extractSymbolsFromFile,
+  findBlastRadiusCallers,
+  runSpecialistToolLoop,
+  specialistUsesToolLoop,
+} from './on-demand';
+export type {
+  ToolContext,
+  ReferenceLocation,
+  ReferenceSource,
+  ToolLoopResult,
+} from './on-demand';
 export type {
   RiskPattern,
   FileDiff,

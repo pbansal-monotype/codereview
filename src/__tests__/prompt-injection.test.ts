@@ -4,8 +4,8 @@ import {
   buildSpecialistUserPrompt,
   buildSharedContext,
   buildJudgeDedupSystemPrompt,
-} from '../agents/prompts';
-import { parseSpecialistFindings, parseStructuredReview, parseDedupedFindings } from '../findings';
+} from '../config/prompts';
+import { parseSpecialistFindings, parseStructuredReview, parseDedupedFindings } from '../output/findings';
 import { SpecialistResult } from '../agents/types';
 import type { PullRequestData } from '../github';
 import type { ReviewConfig } from '../config';
@@ -189,6 +189,7 @@ describe('specialist crash surfacing', () => {
       categoryId: 'security',
       findings: [],
       tokens: { input: 0, output: 0 },
+      apiCalls: 0,
       failed: true,
       error: 'Timeout after 120s',
     };

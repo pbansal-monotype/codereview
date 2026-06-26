@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { shouldIgnoreFile, filterDiffByFiles } from '../context/ignore';
+import { shouldIgnoreFile, filterDiffByFiles } from '../filter';
 
 describe('shouldIgnoreFile', () => {
   it('ignores lockfiles by default', () => {

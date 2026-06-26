@@ -1,9 +1,10 @@
 import { ReviewConfig } from '../config';
-import { formatFindingsMarkdown, StructuredReview } from '../findings';
+import { formatFindingsMarkdown, StructuredReview } from './findings';
 import { estimateCost } from '../cost';
 import { PullRequestData } from '../github';
-import { SpecialistResult, TokenUsage } from './types';
-import { CATEGORY_LABELS } from './prompts';
+import { SpecialistResult, TokenUsage } from '../agents/types';
+import { CATEGORY_LABELS } from '../config/prompts';
+import { formatDebugStatsMarkdown, ReviewDebugStats } from './debug';
 
 interface FormatOptions {
   structured?: StructuredReview;
@@ -13,6 +14,7 @@ interface FormatOptions {
   totalTokens: TokenUsage;
   apiCalls: number;
   specialistResults: SpecialistResult[];
+  debug?: ReviewDebugStats;
 }
 
 function unverifiedBanner(structured: StructuredReview): string {
@@ -87,7 +89,8 @@ export function formatReviewMarkdown(opts: FormatOptions): string {
   }
 
   md += `\n---\n\n`;
-  md += `<details>\n<summary>📊 Review Stats</summary>\n\n`;
+  const statsTitle = opts.debug ? '📊 Review Stats (debug)' : '📊 Review Stats';
+  md += `<details>\n<summary>${statsTitle}</summary>\n\n`;
   md += `- Categories: ${categories.map((id) => CATEGORY_LABELS[id] || id).join(', ')}\n`;
   md += `- API calls: ${apiCalls} (${apiCalls - 1} specialist + 1 judge)\n`;
   md += `- Tokens: ${totalTokens.input.toLocaleString()} input + ${totalTokens.output.toLocaleString()} output = ${(totalTokens.input + totalTokens.output).toLocaleString()} total\n`;
@@ -111,6 +114,11 @@ export function formatReviewMarkdown(opts: FormatOptions): string {
   }
 
   md += `- Provider: ${config.provider} / ${config.model}\n`;
+
+  if (opts.debug) {
+    md += formatDebugStatsMarkdown(opts.debug, opts.specialistResults);
+  }
+
   md += `</details>\n`;
 
   return md;

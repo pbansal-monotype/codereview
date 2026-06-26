@@ -14,24 +14,35 @@ export {
   MAX_PROMPT_CHARS,
 } from './app';
 
-// Allowed file extensions
+// Per-file rules, allowed extensions, ignore patterns
 export {
   ALLOWED_EXTENSIONS,
   ALLOWED_FILENAMES,
   isAllowedFile,
-} from './allowed-extensions';
-
-// Ignore patterns and binary detection
-export {
   DEFAULT_IGNORE_PATTERNS,
   BINARY_EXTENSIONS,
-} from './ignore-patterns';
-
-// Per-filetype review rules
-export {
   FILE_RULES,
   getFileRules,
   getFileRiskWeight,
   getFileReviewHints,
   type FileRule,
 } from './file-rules';
+
+// Prompts and guidelines
+export {
+  CATEGORY_LABELS,
+  buildPrMetadata,
+  buildSharedContext,
+  buildSpecialistSystemPrompt,
+  buildSpecialistUserPrompt,
+  buildJudgeDedupSystemPrompt,
+  buildJudgeDedupUserPrompt,
+  collectSpecialistFindings,
+} from './prompts';
+
+// On-demand tool definitions
+export {
+  MAX_TOOL_HOPS,
+  TOOL_INSTRUCTIONS,
+  TOOL_CATEGORIES,
+} from './tools';

@@ -1,2 +1,2 @@
 export { runReview } from './orchestrator';
-export { ReviewResult } from './types';
+export { ReviewResult, ReviewRunOptions } from './types';

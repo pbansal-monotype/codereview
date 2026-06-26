@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { estimateCost } from '../cost';
+import { estimateCost, formatApiCallCount } from '../cost';
 
 describe('estimateCost', () => {
   it('estimates Claude Sonnet cost', () => {
@@ -23,5 +23,25 @@ describe('estimateCost', () => {
     const cost = estimateCost('gpt-4o-mini', 100, 50);
     assert.ok(cost);
     assert.ok(cost.includes('<$0.001') || cost.includes('~$'));
+  });
+});
+
+describe('formatApiCallCount', () => {
+  it('reports fixed count when no tool hops', () => {
+    const summary = formatApiCallCount([
+      { categoryId: 'security', apiCalls: 1 },
+      { categoryId: 'code', apiCalls: 1 },
+    ]);
+    assert.ok(summary.includes('3'));
+    assert.ok(summary.includes('2 specialist'));
+  });
+
+  it('reports per-specialist breakdown when tool loops add calls', () => {
+    const summary = formatApiCallCount([
+      { categoryId: 'security', apiCalls: 4 },
+      { categoryId: 'code', apiCalls: 1 },
+    ]);
+    assert.ok(summary.includes('security=4'));
+    assert.ok(summary.includes('6'));
   });
 });

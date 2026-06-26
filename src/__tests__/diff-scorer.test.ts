@@ -37,8 +37,8 @@ describe('scoreFile', () => {
   });
 
   it('boosts new unpatterned source files into high-risk (diff+content)', () => {
-    const modified = scoreFile('src/lib/initWfgFromConfig.js', SMALL_DIFF);
-    const added = scoreFile('src/lib/initWfgFromConfig.js', SMALL_DIFF, { isNew: true });
+    const modified = scoreFile('src/features/initWfgFromConfig.js', SMALL_DIFF);
+    const added = scoreFile('src/features/initWfgFromConfig.js', SMALL_DIFF, { isNew: true });
     assert.ok(modified < THRESHOLDS.HIGH_RISK);
     assert.ok(added >= THRESHOLDS.HIGH_RISK);
     assert.ok(added > modified);

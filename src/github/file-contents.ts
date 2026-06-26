@@ -1,5 +1,5 @@
 import { ghRequest, type Octokit } from './client';
-import { isBinaryFile } from '../context/ignore';
+import { isBinaryFile } from '../filter';
 import type { FileContent } from './types';
 
 const FETCH_CONCURRENCY = 10;

@@ -11,7 +11,7 @@ import {
   mechanicalDedup,
   buildUnverifiedFallback,
   buildJudgeReviewFromDedup,
-} from '../findings';
+} from '../output/findings';
 
 describe('parseStructuredReview', () => {
   it('parses valid JSON with confidence field', () => {

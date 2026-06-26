@@ -5,14 +5,14 @@ import {
   buildUnverifiedFallback,
   buildJudgeReviewFromDedup,
   StructuredReview,
-} from '../findings';
+} from '../output/findings';
 import { AIProvider } from '../providers';
 import { SpecialistResult, TokenUsage } from './types';
 import {
   buildJudgeDedupSystemPrompt,
   buildJudgeDedupUserPrompt,
   collectSpecialistFindings,
-} from './prompts';
+} from '../config/prompts';
 
 interface JudgeResult {
   structured: StructuredReview;

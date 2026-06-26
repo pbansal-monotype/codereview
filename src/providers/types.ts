@@ -1,4 +1,4 @@
-import { StructuredReview } from '../findings';
+import { StructuredReview } from '../output/findings';
 
 /** A single block in a structured system prompt. */
 export interface SystemPromptBlock {

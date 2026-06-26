@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import { parseDiffForCommentTargets } from '../context/diff';
-import type { Finding } from '../findings';
+import type { Finding } from '../output/findings';
 import { getOctokit, getRepoContext } from './client';
 import type { Octokit } from './client';
 
