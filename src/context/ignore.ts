@@ -1,71 +1,5 @@
-const DEFAULT_IGNORE_PATTERNS = [
-  // dependency directories
-  '**/node_modules/**',
-  '**/vendor/**',
-  // build outputs
-  '**/dist/**',
-  '**/build/**',
-  '**/.next/**',
-  '**/out/**',
-  '**/coverage/**',
-  // version-control internals
-  '**/.git/**',
-  // lock files (large, machine-generated, no review value)
-  '**/package-lock.json',
-  '**/yarn.lock',
-  '**/pnpm-lock.yaml',
-  '**/bun.lockb',
-  '**/Gemfile.lock',
-  '**/Cargo.lock',
-  '**/go.sum',
-  '**/poetry.lock',
-  // markdown docs (no review value)
-  '**/README.md',
-  '**/README*',
-  '**/CHANGELOG.md',
-  '**/CHANGELOG*',
-  '**/*.md',
-  // VCS / editor config
-  '**/.gitignore',
-  '**/.gitattributes',
-  // CI/CD config — workflow files, not application logic
-  '**/.github/**',
-  // test fixtures and mocks — not application logic
-  '**/__mocks__/**',
-  '**/__fixtures__/**',
-  '**/*__testdata__*',
-  // minified / bundled assets
-  '**/*.min.js',
-  '**/*.min.css',
-  '**/*.bundle.js',
-  // source maps
-  '**/*.map',
-  // generated / vendored code
-  '**/*.pb.go',
-  '**/*_generated.*',
-  '**/*.gen.*',
-  // test snapshots
-  '**/*.snap',
-  // binary / media assets
-  '**/*.png',
-  '**/*.jpg',
-  '**/*.jpeg',
-  '**/*.gif',
-  '**/*.ico',
-  '**/*.woff',
-  '**/*.woff2',
-  '**/*.ttf',
-  '**/*.pdf',
-  '**/*.zip',
-
-  // env files
-  '**/*.env',
-  '**/*.env.example',
-  '**/*.env.*',
-  '**/*.env.*.*',
-  '**/*.env.*.*.*',
-  '**/*.env.*.*.*.*',
-];
+import { DEFAULT_IGNORE_PATTERNS, BINARY_EXTENSIONS } from '../config/ignore-patterns';
+import { isAllowedFile } from '../config/allowed-extensions';
 
 function globToRegex(glob: string): RegExp {
   const escaped = glob
@@ -137,17 +71,13 @@ export function filterDiffByFiles(diff: string, ignoredFiles: Set<string>): stri
 
 // ─── Binary file detection (skip content fetch) ───────────────────
 
-const BINARY_EXTENSIONS = new Set([
-  '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.svg',
-  '.woff', '.woff2', '.ttf', '.eot',
-  '.pdf', '.zip', '.tar', '.gz', '.br',
-  '.mp3', '.mp4', '.mov', '.avi',
-  '.wasm', '.pyc', '.class', '.o', '.so', '.dll',
-]);
-
 /** True when a file path has a binary/media extension and should not be fetched as text. */
 export function isBinaryFile(filePath: string): boolean {
   const dot = filePath.lastIndexOf('.');
   if (dot < 0) return false;
   return BINARY_EXTENSIONS.has(filePath.slice(dot).toLowerCase());
 }
+
+// ─── Allowed-file filter (re-export for convenience) ──────────────
+
+export { isAllowedFile };

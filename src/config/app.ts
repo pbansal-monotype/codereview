@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
-import { parseIgnorePatterns } from './context/ignore';
-import { DEFAULT_GUIDELINES } from './agents/guidelines';
-import type { StoreType } from './state';
+import { parseIgnorePatterns } from '../context/ignore';
+import { DEFAULT_GUIDELINES } from '../agents/guidelines';
+import type { StoreType } from '../state';
 
 export interface CategoryGuidelines {
   enabled: boolean;
