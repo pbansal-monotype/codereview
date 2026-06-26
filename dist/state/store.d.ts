@@ -1,7 +1,12 @@
+import type { StoredFinding } from './findings-state';
 export interface ReviewState {
     lastReviewedSha: string;
     lastReviewedAt: string;
     reviewCount: number;
+    /** Findings from the last successful review (for same-commit reuse and suppression). */
+    storedFindings?: StoredFinding[];
+    /** Fingerprints dismissed via PR comments or inline /dismiss replies. */
+    dismissedFingerprints?: string[];
 }
 export interface StateStore {
     get(repo: string, prNumber: number): Promise<ReviewState | null>;

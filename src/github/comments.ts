@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import { parseDiffForCommentTargets } from '../context/diff';
 import type { Finding } from '../output/findings';
+import { findingFingerprint } from '../output/findings';
 import { getOctokit, getRepoContext } from './client';
 import type { Octokit } from './client';
 
@@ -107,6 +108,8 @@ function formatInlineCommentBody(
   if (relocated) {
     body = `📍 *Refers to line ${finding.line}*\n\n${body}`;
   }
+  body += `\n<!-- ai-pr-finding: ${findingFingerprint(finding)} -->`;
+  body += '\n\n<sub>Reply with `/dismiss` to ignore this finding on future reviews.</sub>';
   return body;
 }
 

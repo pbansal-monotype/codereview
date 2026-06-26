@@ -1,4 +1,5 @@
 import { Finding, StructuredReview } from '../output/findings';
+import type { FindingSuppression } from '../state/suppression';
 
 export interface TokenUsage {
   input: number;
@@ -18,6 +19,8 @@ export interface SpecialistResult {
 export interface ReviewRunOptions {
   /** Include detailed context ranking, tool calls, and pipeline stats in review output. */
   debug?: boolean;
+  /** Dismissed fingerprints and prior findings — suppresses repeat reports. */
+  suppression?: FindingSuppression;
 }
 
 export interface ReviewResult {

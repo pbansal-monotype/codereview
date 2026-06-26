@@ -73,11 +73,18 @@ A TypeScript GitHub Action that automates pull request code review using a multi
                         └───────┬────────┘
                                 ▼
                         ┌────────────────┐
+                        │  Suppression   │
+                        │ dismiss filter │
+                        │ + state cache  │
+                        └───────┬────────┘
+                                ▼
+                        ┌────────────────┐
                         │  Format MD     │
                         └───────┬────────┘
                                 ▼
                  PR Summary Comment + Inline Comments
                         +  State Persistence
+                        (SHA, findings, dismissals)
 ```
 
 ---
@@ -103,7 +110,18 @@ A TypeScript GitHub Action that automates pull request code review using a multi
 │       ▼                                                                      │
 │  createStateStore(config)                                                     │
 │       │  Backend: comment-marker | gist | none                               │
-│       │  Reads: last_reviewed_sha for this PR                                │
+│       │  Reads: ReviewState for this PR                                      │
+│       │    • lastReviewedSha, storedFindings, dismissedFingerprints          │
+│       │                                                                      │
+│       ▼                                                                      │
+│  collectDismissedFingerprints()                                               │
+│       │  /dismiss replies on inline threads + <!-- ai-pr-dismiss --> markers │
+│       │  Merged with persisted dismissedFingerprints                         │
+│       │                                                                      │
+│       ▼                                                                      │
+│  Same SHA already reviewed? (lastReviewedSha === headSha)                    │
+│       YES → reuse storedFindings, skip LLM, refresh comment + outputs        │
+│       NO  → continue to data collection                                      │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -185,7 +203,8 @@ A TypeScript GitHub Action that automates pull request code review using a multi
 │  │ For each enabled category (security, code, custom):                  │     │
 │  │                                                                      │     │
 │  │  buildSpecialistSystemPrompt(categoryId, guidelines, config)         │     │
-│  │  buildSpecialistUserPrompt(sharedContext)                            │     │
+│  │  buildSpecialistUserPrompt(sharedContext, suppression?)              │     │
+│  │    • suppression block lists dismissed + prior findings              │     │
 │  │                                                                      │     │
 │  │  security / code → runSpecialistToolLoop()                           │     │
 │  │    • Up to MAX_TOOL_HOPS (3) rounds of tool requests                 │     │
@@ -239,6 +258,10 @@ A TypeScript GitHub Action that automates pull request code review using a multi
 │       │  parseDiffForCommentTargets() → valid line map                       │
 │       │                                                                      │
 │       ▼                                                                      │
+│  filterDismissedFindings(structured, dismissedFingerprints)                  │
+│       │  Drop findings whose fingerprint was dismissed by reviewer             │
+│       │                                                                      │
+│       ▼                                                                      │
 │  formatReviewMarkdown(opts)                                                  │
 │       │  • Header: PR info, provider, mode                                   │
 │       │  • Unverified banner (if judge failed)                               │
@@ -253,9 +276,11 @@ A TypeScript GitHub Action that automates pull request code review using a multi
 │       ▼                                                                      │
 │  postInlineReview(token, prNumber, diff, findings)                           │
 │       │  Map to valid diff lines; dedup against existing bot comments        │
+│       │  Embed <!-- ai-pr-finding: fingerprint --> per comment               │
 │       │                                                                      │
 │       ▼                                                                      │
-│  Persist state (gist backend) + set action outputs                           │
+│  Persist ReviewState (gist or comment-marker) + set action outputs           │
+│       │  { lastReviewedSha, storedFindings, dismissedFingerprints }          │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -270,6 +295,9 @@ PR Review/
 ├── package.json                  # Dependencies and scripts
 ├── tsconfig.json                 # TypeScript configuration
 ├── ARCHITECTURE.md               # This file
+├── docs/
+│   ├── agents.md                 # Agent pipeline + finding loop prevention
+│   └── context.md                # Context pipeline
 ├── dist/
 │   └── index.js                  # Bundled output (ncc build)
 ├── src/
@@ -339,11 +367,14 @@ PR Review/
 │   │   ├── types.ts              # PullRequestData, FetchPROptions
 │   │   ├── pr-data.ts            # Fetch PR metadata, diff, changed files
 │   │   ├── file-contents.ts      # Fetch full file contents from head branch
-│   │   └── comments.ts           # Upsert summary comment, post inline comments
+│   │   ├── comments.ts           # Upsert summary comment, post inline comments
+│   │   └── dismissals.ts         # Parse /dismiss replies and dismiss markers
 │   │
 │   ├── state/
 │   │   ├── index.ts
-│   │   └── store.ts              # GistStateStore, comment-marker, factory
+│   │   ├── store.ts              # GistStateStore, comment-marker, factory
+│   │   ├── findings-state.ts     # StoredFinding serialization
+│   │   └── suppression.ts        # Suppression prompt + dismiss merge helpers
 │   │
 │   ├── cli/
 │   │   └── local-review.ts       # CLI for local testing
@@ -542,7 +573,9 @@ Verdicts are appended to the next tool-loop hop so the specialist can decide whe
 | **Sanitize** | `src/sanitize.ts` | Strips API keys from failure messages in logs |
 | **Retry** | `src/retry.ts` | Exponential backoff on 429/5xx/timeouts |
 | **Cost** | `src/cost.ts` | Approximate token cost estimation for review footer |
-| **State** | `src/state/store.ts` | Persists `last_reviewed_sha` (gist or comment marker) |
+| **State** | `src/state/` | Persists `lastReviewedSha`, `storedFindings`, `dismissedFingerprints` |
+| **Dismissals** | `src/github/dismissals.ts` | Collects `/dismiss` replies and `ai-pr-dismiss` markers from PR |
+| **Suppression** | `src/state/suppression.ts` | Injects prior/dismissed findings into specialist prompts |
 
 ---
 
@@ -583,6 +616,8 @@ A single LLM call consolidates specialist output:
 | **Error Sanitization** | API keys stripped from failure messages in logs (`sanitize.ts`) |
 | **Degraded Judge Fallback** | Unparseable judge output → specialist findings published with unverified banner |
 | **Diff-Anchored Findings** | Only findings with `file:line` on a changed line survive post-processing |
+| **Finding Suppression** | Dismissed fingerprints filtered mechanically; prior findings injected into prompts |
+| **Same-Commit Reuse** | Re-running on an already-reviewed SHA skips LLM and reuses `storedFindings` |
 | **Vague Finding Filter** | Findings starting with "Ensure/Consider/Verify" are auto-dropped |
 | **Low Confidence Filter** | Findings with `confidence: "low"` are auto-dropped |
 | **File Filtering Pipeline** | Three-layer gate: allowed extensions → ignore patterns → binary detection |
@@ -595,38 +630,69 @@ A single LLM call consolidates specialist output:
 File arrives in PR
   → isAllowedFile()? → shouldIgnoreFile()? → isBinaryFile()?
     → Risk-scored + blast-radius boosted → budgeted into shared context
-      → Specialist raw JSON (or tool-loop multi-hop)
-        → parseSpecialistFindings(): filter vague/low-confidence/missing snippet
-          → Judge dedup: three-condition rule, merge duplicates
-            → Parse retry on failure → degraded mechanical dedup
-              → filterFindingsToDiff(): only diff-touching lines survive
-                → Final StructuredReview
-                  → Posted as summary comment + inline comments
+      → Load ReviewState + dismissed fingerprints from PR comments
+        → Same SHA already reviewed? → reuse cached findings (skip LLM)
+          → Specialist raw JSON (or tool-loop multi-hop)
+            → suppression prompt: do not re-report dismissed / likely-fixed issues
+              → parseSpecialistFindings(): filter vague/low-confidence/missing snippet
+                → Judge dedup: three-condition rule, merge duplicates
+                  → Parse retry on failure → degraded mechanical dedup
+                    → filterFindingsToDiff(): only diff-touching lines survive
+                      → filterDismissedFindings(): drop reviewer-dismissed ids
+                        → Final StructuredReview
+                          → Posted as summary comment + inline comments (with fingerprints)
+                            → State persisted: lastReviewedSha, storedFindings, dismissedFingerprints
 ```
+
+See [docs/agents.md](docs/agents.md) for the full agent pipeline and dismissal UX.
 
 ---
 
-## Incremental Review (State Persistence)
+## Incremental Review & Finding Loop Prevention
+
+### Incremental diff
 
 ```
 Push 1 (PR opened):
   No previous state → full diff (base..head)
-  After review → persist last_reviewed_sha = head_sha_1
+  After review → persist lastReviewedSha = head_sha_1 + storedFindings
 
 Push 2 (synchronize):
-  Read state → last_reviewed_sha = head_sha_1
+  Read state → lastReviewedSha = head_sha_1
   Incremental diff: head_sha_1..head_sha_2
-  After review → persist last_reviewed_sha = head_sha_2
+  Suppression prompt includes findings from push 1
+  After review → persist lastReviewedSha = head_sha_2
+
+Workflow re-run (same commit, no new push):
+  lastReviewedSha === headSha → reuse storedFindings, skip LLM
 
 Force-push (SHA unreachable):
   Fall back to full diff, persist new head SHA
+```
+
+### Dismissing findings
+
+Inline comments include `<!-- ai-pr-finding: category|file|message-headline -->`. Reviewers reply `/dismiss` (or `dismiss`, `won't fix`, `ignore`) on the thread to suppress that finding on future runs. Alternatively, post `<!-- ai-pr-dismiss: fingerprint -->` as a PR issue comment.
+
+### State schema
+
+```ts
+interface ReviewState {
+  lastReviewedSha: string;
+  lastReviewedAt: string;
+  reviewCount: number;
+  storedFindings?: StoredFinding[];
+  dismissedFingerprints?: string[];
+}
 ```
 
 | Backend | Config | How it works |
 |---------|--------|--------------|
 | **comment-marker** (default) | `state_store: comment-marker` | `<!-- ai-pr-reviewer-state: {...} -->` embedded in review comment |
 | **gist** | `state_store: gist` + `state_gist_id` | JSON keyed by `repo-pr_number` in a GitHub Gist |
-| **none** | `state_store: none` | No persistence; always full diff |
+| **none** | `state_store: none` | No persistence; always full diff; no same-commit reuse or dismiss persistence |
+
+Requires `incremental_review: true` (default). Consumer workflows should use **concurrency** (`cancel-in-progress: true`) so `lastReviewedSha` does not race between parallel runs.
 
 ---
 
@@ -641,8 +707,9 @@ Force-push (SHA unreachable):
 | `repos.compareCommitsWithBasehead` | Incremental diff between SHAs |
 | `repos.getContent` | Full file contents at PR head ref |
 | `git.getCommit` | Verify SHA reachability (force-push detection) |
-| `issues.listComments` / `createComment` / `updateComment` | Summary review comment (upsert) |
-| `pulls.createReview` / `createReviewComment` | Inline diff comments |
+| `issues.listComments` / `createComment` / `updateComment` | Summary review comment (upsert), dismiss markers |
+| `pulls.listReviewComments` | Inline comments; `/dismiss` reply detection |
+| `pulls.createReview` / `createReviewComment` | Post inline diff comments with finding fingerprints |
 | `gists.get` / `gists.update` | State persistence (gist backend) |
 
 **Permissions required:** `contents: read`, `pull-requests: write`
@@ -672,7 +739,8 @@ All providers go through `withRetry()` — 3 attempts, exponential backoff, 120s
 9. **Resilient fan-out** — `Promise.allSettled` so one crashed specialist doesn't kill the pipeline
 10. **Judge parse retry + fallback** — One retry on parse failure; then mechanical dedup with unverified banner
 11. **Single-file distribution** — `ncc` bundle makes the action self-contained
-12. **Incremental review via persisted state** — `last_reviewed_sha` prevents re-reviewing unchanged code
+12. **Incremental review via persisted state** — `lastReviewedSha` prevents re-reviewing unchanged code
+13. **Finding loop prevention** — Same-commit reuse, `/dismiss` on inline threads, suppression prompts, and mechanical dismiss filter so fixed or ignored issues do not block merges indefinitely
 
 ---
 
@@ -684,6 +752,14 @@ All providers go through `withRetry()` — 3 attempts, exponential backoff, 120s
 | Compiled entry | `dist/index.js` (produced by `ncc build src/index.ts`) |
 | Action entry | `action.yml` → `runs.main: dist/index.js` on Node 20 |
 | CLI entry | `src/cli/local-review.ts` → `npm run local-review` |
+
+## Related docs
+
+| Doc | Contents |
+|-----|----------|
+| [docs/agents.md](docs/agents.md) | Specialist → evidence validation → judge pipeline, finding loop prevention |
+| [docs/context.md](docs/context.md) | PR → diff → context builder → on-demand tools |
+| [README.md](README.md) | Quick start, inputs/outputs, consumer workflow setup |
 
 ---
 

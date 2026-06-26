@@ -22,6 +22,30 @@ export interface StructuredReview {
 const VALID_SEVERITIES = new Set<string>(['critical', 'warning', 'suggestion']);
 const VALID_CONFIDENCES = new Set<string>(['high', 'medium', 'low']);
 
+/**
+ * Stable id for a finding across review runs (line numbers may shift).
+ * Used for dismissal tracking and same-issue suppression.
+ */
+export function findingFingerprint(f: Finding): string {
+  const file = f.file ?? '';
+  const headline = f.message
+    .split('→')[0]
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  return `${f.category}|${file}|${headline}`;
+}
+
+/** Drop findings whose fingerprint was dismissed by a reviewer. */
+export function filterDismissedFindings(
+  findings: Finding[],
+  dismissed: Set<string>,
+): Finding[] {
+  if (dismissed.size === 0) return findings;
+  return findings.filter((f) => !dismissed.has(findingFingerprint(f)));
+}
+
 export interface ParseStructuredReviewOptions {
   /**
    * @deprecated Findings are no longer capped; this option is ignored.

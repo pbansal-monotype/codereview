@@ -2,12 +2,62 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { loadConfig } from './config';
 import { createProvider } from './providers';
-import { getPullRequestData, postReviewComment, postInlineReview } from './github';
+import {
+  getPullRequestData,
+  postReviewComment,
+  postInlineReview,
+  collectDismissedFingerprints,
+} from './github';
 import { runReview } from './agents';
 import { sanitizeErrorMessage } from './sanitize';
-import { createStateStore } from './state';
+import {
+  createStateStore,
+  fromStoredFindings,
+  mergeDismissedFingerprints,
+  toStoredFindings,
+  type ReviewState,
+} from './state';
+import {
+  buildJudgeReviewFromDedup,
+  filterDismissedFindings,
+  hasCriticalFindings,
+} from './output/findings';
+import { formatReviewMarkdown } from './output/format';
+import type { ReviewResult } from './agents/types';
 
 const MAX_OUTPUT_BYTES = 900_000;
+
+function buildStatePayload(
+  headSha: string,
+  reviewCount: number,
+  findings: ReturnType<typeof toStoredFindings>,
+  dismissedFingerprints: string[],
+): ReviewState {
+  return {
+    lastReviewedSha: headSha,
+    lastReviewedAt: new Date().toISOString(),
+    reviewCount,
+    storedFindings: findings,
+    dismissedFingerprints,
+  };
+}
+
+async function persistState(
+  stateStore: NonNullable<ReturnType<typeof createStateStore>>,
+  stateStoreType: string,
+  fullRepo: string,
+  prNumber: number,
+  state: ReviewState,
+): Promise<void> {
+  if (stateStoreType === 'gist') {
+    await stateStore.set(fullRepo, prNumber, state);
+  }
+}
+
+function appendStateMarker(commentBody: string, state: ReviewState): string {
+  const stateJson = JSON.stringify(state);
+  return `${commentBody}\n<!-- ai-pr-reviewer-state: ${stateJson} -->`;
+}
 
 async function main(): Promise<void> {
   try {
@@ -18,22 +68,26 @@ async function main(): Promise<void> {
 
     const provider = createProvider(config.provider, config.apiKey, config.model, config.azureEndpoint);
 
-    // ── State: read last_reviewed_sha ────────────────────────────
     const { owner, repo } = github.context.repo;
     const fullRepo = `${owner}/${repo}`;
-    const prNumber = github.context.payload.pull_request?.number;
+    const prPayload = github.context.payload.pull_request;
+    const prNumber = prPayload?.number;
+    const headSha = prPayload?.head?.sha;
+
+    if (!prNumber || !headSha) {
+      throw new Error('This action can only run on pull_request events with a head SHA.');
+    }
 
     const stateStore = config.incrementalReview
       ? createStateStore(config.stateStore, config.githubToken, config.stateGistId)
       : null;
 
-    let lastReviewedSha: string | undefined;
-    if (stateStore && prNumber) {
-      const prevState = await stateStore.get(fullRepo, prNumber);
+    let prevState: ReviewState | null = null;
+    if (stateStore) {
+      prevState = await stateStore.get(fullRepo, prNumber);
       if (prevState) {
-        lastReviewedSha = prevState.lastReviewedSha;
         core.info(
-          `Previous review state found: sha=${lastReviewedSha.slice(0, 7)}, ` +
+          `Previous review state found: sha=${prevState.lastReviewedSha.slice(0, 7)}, ` +
           `review #${prevState.reviewCount} at ${prevState.lastReviewedAt}`,
         );
       } else {
@@ -41,10 +95,88 @@ async function main(): Promise<void> {
       }
     }
 
+    const dismissedFromComments = await collectDismissedFingerprints(
+      config.githubToken,
+      prNumber,
+    );
+    const dismissedFingerprints = mergeDismissedFingerprints(
+      prevState?.dismissedFingerprints,
+      dismissedFromComments,
+    );
+    const suppression = {
+      dismissedFingerprints: new Set(dismissedFingerprints),
+      previousFindings: prevState?.storedFindings,
+    };
+
+    // Same commit already reviewed — reuse cached findings (avoids re-running LLM on workflow re-triggers).
+    if (
+      config.incrementalReview &&
+      prevState &&
+      prevState.lastReviewedSha === headSha
+    ) {
+      core.info(
+        `Commit ${headSha.slice(0, 7)} already reviewed — reusing cached findings ` +
+        `(reply /dismiss on inline comments to suppress issues).`,
+      );
+
+      const pr = await getPullRequestData(config.githubToken, {
+        ignorePatterns: config.ignorePatterns,
+      });
+
+      const cachedFindings = filterDismissedFindings(
+        fromStoredFindings(prevState.storedFindings ?? []),
+        suppression.dismissedFingerprints,
+      );
+      const structured = buildJudgeReviewFromDedup(cachedFindings);
+      const categoryIds = Object.entries(config.categories)
+        .filter(([, g]) => g.enabled)
+        .map(([id]) => id);
+
+      const markdown = formatReviewMarkdown({
+        structured,
+        pr,
+        config,
+        categories: categoryIds,
+        totalTokens: { input: 0, output: 0 },
+        apiCalls: 0,
+        specialistResults: [],
+      });
+
+      const reviewCount = (prevState.reviewCount ?? 0) + 1;
+      const state = buildStatePayload(
+        headSha,
+        reviewCount,
+        toStoredFindings(cachedFindings),
+        dismissedFingerprints,
+      );
+
+      core.setOutput('review_body', markdown);
+      core.setOutput('has_critical_issues', hasCriticalFindings(structured).toString());
+      core.setOutput('categories_reviewed', categoryIds.join(','));
+      core.setOutput('findings_count', String(structured.findings.length));
+
+      let commentBody = markdown;
+      if (config.stateStore === 'comment-marker') {
+        commentBody = appendStateMarker(commentBody, state);
+      }
+      await postReviewComment(config.githubToken, pr.number, commentBody);
+
+      if (structured.findings.length > 0) {
+        await postInlineReview(config.githubToken, pr.number, pr.diff, structured.findings);
+      }
+
+      if (stateStore) {
+        await persistState(stateStore, config.stateStore, fullRepo, pr.number, state);
+      }
+
+      core.info('Review complete (cached).');
+      return;
+    }
+
     core.info('Fetching PR data...');
     const pr = await getPullRequestData(config.githubToken, {
       ignorePatterns: config.ignorePatterns,
-      lastReviewedSha: config.incrementalReview ? lastReviewedSha : undefined,
+      lastReviewedSha: config.incrementalReview ? prevState?.lastReviewedSha : undefined,
     });
 
     if (pr.isIncremental) {
@@ -67,7 +199,9 @@ async function main(): Promise<void> {
       return;
     }
 
-    const result = await runReview(provider, config, pr);
+    const result: ReviewResult = await runReview(provider, config, pr, {
+      suppression,
+    });
 
     const reviewOutput =
       result.markdown.length > MAX_OUTPUT_BYTES
@@ -82,20 +216,17 @@ async function main(): Promise<void> {
       String(result.structured?.findings.length ?? 0),
     );
 
-    // Always post review comment
+    const reviewCount = (prevState?.reviewCount ?? 0) + 1;
+    const storedFindings = toStoredFindings(result.structured?.findings ?? []);
+    const state = buildStatePayload(headSha, reviewCount, storedFindings, dismissedFingerprints);
+
     core.info('Posting review comment...');
     let commentBody = result.markdown;
     if (config.stateStore === 'comment-marker') {
-      const stateJson = JSON.stringify({
-        lastReviewedSha: pr.headSha,
-        lastReviewedAt: new Date().toISOString(),
-        reviewCount: (stateStore ? ((await stateStore.get(fullRepo, pr.number))?.reviewCount ?? 0) : 0) + 1,
-      });
-      commentBody += `\n<!-- ai-pr-reviewer-state: ${stateJson} -->`;
+      commentBody = appendStateMarker(commentBody, state);
     }
     await postReviewComment(config.githubToken, pr.number, commentBody);
 
-    // Always post inline comments when findings exist
     if (result.structured?.findings.length) {
       core.info('Posting inline review comments...');
       const { posted, skipped } = await postInlineReview(
@@ -111,14 +242,8 @@ async function main(): Promise<void> {
       }
     }
 
-    // ── State: persist last_reviewed_sha after successful review ──
-    if (stateStore && config.stateStore === 'gist') {
-      const prevState = await stateStore.get(fullRepo, pr.number);
-      await stateStore.set(fullRepo, pr.number, {
-        lastReviewedSha: pr.headSha,
-        lastReviewedAt: new Date().toISOString(),
-        reviewCount: (prevState?.reviewCount ?? 0) + 1,
-      });
+    if (stateStore) {
+      await persistState(stateStore, config.stateStore, fullRepo, pr.number, state);
     }
 
     core.info('Review complete.');

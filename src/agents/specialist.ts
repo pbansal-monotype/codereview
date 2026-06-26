@@ -12,6 +12,7 @@ import {
 import { ToolContext, createToolContext } from '../context/on-demand/tools';
 import { runSpecialistToolLoop, specialistUsesToolLoop } from '../context/on-demand/tool-loop';
 import type { ToolLoopDebugRecorder } from '../output/debug';
+import type { FindingSuppression } from '../state/suppression';
 
 export async function runSpecialistAgent(
   provider: AIProvider,
@@ -22,6 +23,7 @@ export async function runSpecialistAgent(
   sharedContext: string,
   toolCtx: ToolContext,
   debugRecorder?: ToolLoopDebugRecorder,
+  suppression?: FindingSuppression,
 ): Promise<SpecialistResult> {
   const label = CATEGORY_LABELS[categoryId] || categoryId;
 
@@ -33,7 +35,7 @@ export async function runSpecialistAgent(
       guidelines.guidelines,
       config,
     );
-    const userPrompt = buildSpecialistUserPrompt(sharedContext);
+    const userPrompt = buildSpecialistUserPrompt(sharedContext, suppression);
 
     core.debug(`[${categoryId}] SYSTEM PROMPT (${systemPrompt.length} chars):\n${systemPrompt}`);
     core.debug(`[${categoryId}] USER PROMPT (${userPrompt.length} chars):\n${userPrompt}`);

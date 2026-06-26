@@ -16,6 +16,13 @@ export interface StructuredReview {
     /** True when the judge output was degraded (e.g. parse failure fallback) and findings have not been verified. */
     unverified?: boolean;
 }
+/**
+ * Stable id for a finding across review runs (line numbers may shift).
+ * Used for dismissal tracking and same-issue suppression.
+ */
+export declare function findingFingerprint(f: Finding): string;
+/** Drop findings whose fingerprint was dismissed by a reviewer. */
+export declare function filterDismissedFindings(findings: Finding[], dismissed: Set<string>): Finding[];
 export interface ParseStructuredReviewOptions {
     /**
      * @deprecated Findings are no longer capped; this option is ignored.

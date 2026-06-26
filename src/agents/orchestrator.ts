@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import { ReviewConfig, CategoryGuidelines } from '../config';
-import { Finding, hasCriticalFindings, StructuredReview } from '../output/findings';
+import { Finding, hasCriticalFindings, StructuredReview, filterDismissedFindings } from '../output/findings';
 import { AIProvider } from '../providers';
 import { PullRequestData } from '../github';
 import { ReviewResult, ReviewRunOptions, SpecialistResult } from './types';
@@ -11,6 +11,7 @@ import { formatReviewMarkdown } from '../output/format';
 import { parseDiffForCommentTargets } from '../context/diff';
 import { ToolLoopDebugRecorder } from '../output/debug';
 import { collectSpecialistFindings } from '../config/prompts';
+import type { FindingSuppression } from '../state/suppression';
 
 function filterFindingsToDiff(
   structured: StructuredReview,
@@ -53,6 +54,7 @@ export async function runReview(
   options: ReviewRunOptions = {},
 ): Promise<ReviewResult> {
   const debug = options.debug === true;
+  const suppression = options.suppression;
   const activeCategories: Array<{
     id: string;
     guidelines: CategoryGuidelines;
@@ -119,6 +121,7 @@ export async function runReview(
         sharedContext,
         toolCtx,
         debugRecorder,
+        suppression,
       ),
     ),
   );
@@ -176,6 +179,19 @@ export async function runReview(
     judgeResult.structured,
     pr.diff,
   );
+
+  if (suppression && suppression.dismissedFingerprints.size > 0) {
+    const before = structured.findings.length;
+    structured.findings = filterDismissedFindings(
+      structured.findings,
+      suppression.dismissedFingerprints,
+    );
+    const removed = before - structured.findings.length;
+    if (removed > 0) {
+      core.info(`[suppression] Removed ${removed} dismissed finding(s) after judge`);
+    }
+  }
+
   const judgeTokens = judgeResult.tokens;
 
   core.info(`[judge] Final approved findings: ${structured.findings.length}`);
