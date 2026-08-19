@@ -8,7 +8,10 @@
     "lint": "tsc --noEmit",
     "test": "tsc -p tsconfig.test.json && node --test dist-test/__tests__",
     "test-agent": "npx ts-node src/eval/run-agent-local.ts",
-    "local-review": "npx ts-node src/cli/local-review.ts"
+    "local-review": "npx ts-node src/cli/local-review.ts",
+    "history-db:up": "docker compose up -d",
+    "history-db:down": "docker compose down",
+    "history-db:logs": "docker compose logs -f rest db"
   },
   "keywords": [
     "github-action",

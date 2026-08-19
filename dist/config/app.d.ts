@@ -21,6 +21,17 @@ export interface ReviewConfig {
     stateStore: StoreType;
     stateGistId: string;
     incrementalReview: boolean;
+    /**
+     * Append-only run/finding history. Disabled unless both url and key are set;
+     * writes are best-effort and never fail the review.
+     */
+    history: HistoryConfig;
+}
+export interface HistoryConfig {
+    /** Supabase project URL, e.g. https://abcdefgh.supabase.co */
+    supabaseUrl: string;
+    /** Secret key (`sb_secret_...`, or the legacy `service_role` key). */
+    supabaseKey: string;
 }
 /** Token budget helpers — rough estimate: 1 token ≈ 4 characters of English/code text. */
 export declare function charsToTokens(chars: number): number;

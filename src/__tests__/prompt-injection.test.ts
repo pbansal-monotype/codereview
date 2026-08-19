@@ -50,6 +50,7 @@ function makeConfig(overrides: Partial<ReviewConfig> = {}): ReviewConfig {
     stateStore: 'none',
     stateGistId: '',
     incrementalReview: false,
+    history: { supabaseUrl: '', supabaseKey: '' },
     ...overrides,
   };
 }

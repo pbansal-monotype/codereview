@@ -1,5 +1,6 @@
 import type { RiskPattern } from './types';
 import { isTestFile, TEST_FILE_LOW_SCORE } from './loader';
+import { getFileRiskWeight } from '../../config/file-rules/rules';
 
 export const THRESHOLDS = {
   HIGH_RISK: 0.6,
@@ -60,6 +61,13 @@ export function scoreFile(
       score = THRESHOLDS.HIGH_RISK;
     }
   }
+
+  // Per-filetype risk weight (config/file-rules): scale scrutiny up for
+  // high-blast-radius types (C/C++, IaC, shell, SQL) and down for low-risk
+  // ones (stylesheets, data configs). Multiplicative so a 0.00 hard-skip stays
+  // skipped and high-risk path scores saturate at the 1.0 cap.
+  const riskWeight = getFileRiskWeight(filePath);
+  score = score * riskWeight;
 
   return Math.min(1.0, score);
 }

@@ -69,8 +69,8 @@ export function createToolContext(
 
 function isSearchableFile(filePath: string, ignorePatterns: string[]): boolean {
   if (!isAllowedFile(filePath)) return false;
-  if (isBinaryFile(filePath)) return false;
   if (shouldIgnoreFile(filePath, ignorePatterns)) return false;
+  if (isBinaryFile(filePath)) return false;
   return true;
 }
 

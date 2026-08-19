@@ -4,6 +4,8 @@ import {
   parseDedupedFindings,
   buildUnverifiedFallback,
   buildJudgeReviewFromDedup,
+  mechanicalDedup,
+  Finding,
   StructuredReview,
 } from '../output/findings';
 import { AIProvider } from '../providers';
@@ -17,6 +19,23 @@ import {
 interface JudgeResult {
   structured: StructuredReview;
   tokens: TokenUsage;
+  apiCalls: number;
+}
+
+/**
+ * The judge LLM only earns its cost when findings can actually be merged — i.e.
+ * two or more findings land in the same file. With 0–1 findings, or when every
+ * finding is in a distinct file, mechanical dedup is equivalent and free.
+ */
+function judgeCanSkipLLM(findings: Finding[]): boolean {
+  if (findings.length <= 1) return true;
+  const filesSeen = new Set<string>();
+  for (const f of findings) {
+    const file = f.file ?? '';
+    if (filesSeen.has(file)) return false;
+    filesSeen.add(file);
+  }
+  return true;
 }
 
 interface AgentCallSuccess<T> {
@@ -45,7 +64,13 @@ async function callWithParseRetry<T>(
   timeoutMs: number,
   parse: (raw: string) => T,
 ): Promise<AgentCallOutcome<T>> {
-  const response = await provider.review({ systemPrompt, userPrompt, timeoutMs });
+  const systemPromptBlocks = [{ text: systemPrompt, ephemeralCache: true }];
+  const response = await provider.review({
+    systemPrompt,
+    systemPromptBlocks,
+    userPrompt,
+    timeoutMs,
+  });
 
   core.debug(`[${label}] SYSTEM PROMPT (${systemPrompt.length} chars):\n${systemPrompt}`);
   core.debug(`[${label}] USER PROMPT (${userPrompt.length} chars):\n${userPrompt}`);
@@ -76,7 +101,12 @@ async function callWithParseRetry<T>(
 
   core.warning(`[${label}] Failed to parse output on first attempt — retrying once...`);
 
-  const retry = await provider.review({ systemPrompt, userPrompt, timeoutMs });
+  const retry = await provider.review({
+    systemPrompt,
+    systemPromptBlocks,
+    userPrompt,
+    timeoutMs,
+  });
   const second = attemptParse(retry.review, 'retry');
   if (second !== null) {
     return {
@@ -107,6 +137,18 @@ export async function runJudge(
   const allFindings = collectSpecialistFindings(specialistResults);
 
   core.info(`[judge/dedup] Deduplicating ${allFindings.length} raw finding(s)...`);
+
+  if (judgeCanSkipLLM(allFindings)) {
+    core.info(
+      `[judge/dedup] Skipping LLM dedup — ${allFindings.length} finding(s) with no ` +
+      `same-file overlap to merge (mechanical dedup only)`,
+    );
+    return {
+      structured: buildJudgeReviewFromDedup(mechanicalDedup(allFindings)),
+      tokens: { input: 0, output: 0 },
+      apiCalls: 0,
+    };
+  }
 
   const dedupOutcome = await callWithParseRetry(
     'judge/dedup',
@@ -140,5 +182,6 @@ export async function runJudge(
   return {
     structured,
     tokens: { input: inputTokens, output: outputTokens },
+    apiCalls: 1,
   };
 }

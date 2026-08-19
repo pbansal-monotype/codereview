@@ -263823,9 +263823,10 @@ function wrappy (fn, cb) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.runReview = void 0;
+exports.filterFindingsToDiff = exports.runReview = void 0;
 var orchestrator_1 = __nccwpck_require__(7932);
 Object.defineProperty(exports, "runReview", ({ enumerable: true, get: function () { return orchestrator_1.runReview; } }));
+Object.defineProperty(exports, "filterFindingsToDiff", ({ enumerable: true, get: function () { return orchestrator_1.filterFindingsToDiff; } }));
 
 
 /***/ }),
@@ -263874,8 +263875,31 @@ const core = __importStar(__nccwpck_require__(7484));
 const config_1 = __nccwpck_require__(9750);
 const findings_1 = __nccwpck_require__(1439);
 const prompts_1 = __nccwpck_require__(3222);
+/**
+ * The judge LLM only earns its cost when findings can actually be merged — i.e.
+ * two or more findings land in the same file. With 0–1 findings, or when every
+ * finding is in a distinct file, mechanical dedup is equivalent and free.
+ */
+function judgeCanSkipLLM(findings) {
+    if (findings.length <= 1)
+        return true;
+    const filesSeen = new Set();
+    for (const f of findings) {
+        const file = f.file ?? '';
+        if (filesSeen.has(file))
+            return false;
+        filesSeen.add(file);
+    }
+    return true;
+}
 async function callWithParseRetry(label, provider, systemPrompt, userPrompt, timeoutMs, parse) {
-    const response = await provider.review({ systemPrompt, userPrompt, timeoutMs });
+    const systemPromptBlocks = [{ text: systemPrompt, ephemeralCache: true }];
+    const response = await provider.review({
+        systemPrompt,
+        systemPromptBlocks,
+        userPrompt,
+        timeoutMs,
+    });
     core.debug(`[${label}] SYSTEM PROMPT (${systemPrompt.length} chars):\n${systemPrompt}`);
     core.debug(`[${label}] USER PROMPT (${userPrompt.length} chars):\n${userPrompt}`);
     const attemptParse = (raw, attempt) => {
@@ -263902,7 +263926,12 @@ async function callWithParseRetry(label, provider, systemPrompt, userPrompt, tim
         };
     }
     core.warning(`[${label}] Failed to parse output on first attempt — retrying once...`);
-    const retry = await provider.review({ systemPrompt, userPrompt, timeoutMs });
+    const retry = await provider.review({
+        systemPrompt,
+        systemPromptBlocks,
+        userPrompt,
+        timeoutMs,
+    });
     const second = attemptParse(retry.review, 'retry');
     if (second !== null) {
         return {
@@ -263926,6 +263955,15 @@ async function callWithParseRetry(label, provider, systemPrompt, userPrompt, tim
 async function runJudge(provider, specialistResults, config) {
     const allFindings = (0, prompts_1.collectSpecialistFindings)(specialistResults);
     core.info(`[judge/dedup] Deduplicating ${allFindings.length} raw finding(s)...`);
+    if (judgeCanSkipLLM(allFindings)) {
+        core.info(`[judge/dedup] Skipping LLM dedup — ${allFindings.length} finding(s) with no ` +
+            `same-file overlap to merge (mechanical dedup only)`);
+        return {
+            structured: (0, findings_1.buildJudgeReviewFromDedup)((0, findings_1.mechanicalDedup)(allFindings)),
+            tokens: { input: 0, output: 0 },
+            apiCalls: 0,
+        };
+    }
     const dedupOutcome = await callWithParseRetry('judge/dedup', provider, (0, prompts_1.buildJudgeDedupSystemPrompt)(config), (0, prompts_1.buildJudgeDedupUserPrompt)(allFindings), config_1.TIMEOUT_MS, findings_1.parseDedupedFindings);
     const inputTokens = dedupOutcome.inputTokens;
     const outputTokens = dedupOutcome.outputTokens;
@@ -263943,6 +263981,7 @@ async function runJudge(provider, specialistResults, config) {
     return {
         structured,
         tokens: { input: inputTokens, output: outputTokens },
+        apiCalls: 1,
     };
 }
 
@@ -263988,6 +264027,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.filterFindingsToDiff = filterFindingsToDiff;
 exports.runReview = runReview;
 const core = __importStar(__nccwpck_require__(7484));
 const findings_1 = __nccwpck_require__(1439);
@@ -264046,6 +264086,8 @@ async function runReview(provider, config, pr, options = {}) {
             tokensUsed: 0,
             inputTokens: 0,
             outputTokens: 0,
+            apiCalls: 0,
+            specialistResults: [],
         };
     }
     if (pr.reviewedFiles.length === 0 && pr.diff.trim().length === 0) {
@@ -264056,6 +264098,8 @@ async function runReview(provider, config, pr, options = {}) {
             tokensUsed: 0,
             inputTokens: 0,
             outputTokens: 0,
+            apiCalls: 0,
+            specialistResults: [],
         };
     }
     const categoryIds = activeCategories.map((c) => c.id);
@@ -264123,7 +264167,7 @@ async function runReview(provider, config, pr, options = {}) {
         judgeTokens.input;
     const totalOutput = specialistResults.reduce((sum, r) => sum + r.tokens.output, 0) +
         judgeTokens.output;
-    const apiCalls = specialistApiCalls + 1; // +1 for judge
+    const apiCalls = specialistApiCalls + judgeResult.apiCalls; // judge may skip the LLM
     const markdown = (0, format_1.formatReviewMarkdown)({
         structured,
         pr,
@@ -264152,6 +264196,8 @@ async function runReview(provider, config, pr, options = {}) {
         tokensUsed: totalInput + totalOutput,
         inputTokens: totalInput,
         outputTokens: totalOutput,
+        apiCalls,
+        specialistResults,
     };
 }
 
@@ -264228,6 +264274,7 @@ async function runSpecialistAgent(provider, categoryId, guidelines, pr, config, 
         }
         const response = await provider.review({
             systemPrompt,
+            systemPromptBlocks: [{ text: systemPrompt, ephemeralCache: true }],
             userPrompt,
             timeoutMs: config_1.TIMEOUT_MS,
         });
@@ -264420,6 +264467,8 @@ const ENV_VAR_NAMES = {
     state_store: 'STATE_STORE',
     state_gist_id: 'STATE_GIST_ID',
     incremental_review: 'INCREMENTAL_REVIEW',
+    supabase_url: 'SUPABASE_URL',
+    supabase_key: 'SUPABASE_KEY',
 };
 function resolve(inputName, fallback = '') {
     return core.getInput(inputName) || process.env[ENV_VAR_NAMES[inputName]] || fallback;
@@ -264486,6 +264535,10 @@ function loadConfig() {
         stateStore: resolve('state_store', 'comment-marker'),
         stateGistId: resolve('state_gist_id'),
         incrementalReview: bool(resolve('incremental_review'), true),
+        history: {
+            supabaseUrl: resolve('supabase_url').replace(/\/+$/, ''),
+            supabaseKey: resolve('supabase_key'),
+        },
     };
 }
 /**
@@ -264532,10 +264585,14 @@ exports.ALLOWED_EXTENSIONS = new Set([
     '.go',
     // Rust
     '.rs',
-    // Java / Kotlin
+    // Java / Kotlin / JVM
     '.java',
     '.kt',
     '.kts',
+    '.scala',
+    '.groovy',
+    '.gradle',
+    '.properties',
     // C#
     '.cs',
     // Ruby
@@ -264544,6 +264601,18 @@ exports.ALLOWED_EXTENSIONS = new Set([
     '.php',
     // Swift
     '.swift',
+    // Dart
+    '.dart',
+    // Elixir
+    '.ex',
+    '.exs',
+    // Objective-C
+    '.m',
+    '.mm',
+    // Lua / Perl
+    '.lua',
+    '.pl',
+    '.pm',
     // Shell
     '.sh',
     '.bash',
@@ -264567,14 +264636,24 @@ exports.ALLOWED_EXTENSIONS = new Set([
     '.svelte',
     // SQL
     '.sql',
+    // Schemas / IDLs
+    '.proto',
+    '.graphql',
+    '.gql',
+    '.prisma',
     // Dockerfiles & infra
     '.dockerfile',
     '.tf',
+    '.tfvars',
     '.hcl',
 ]);
 /**
- * Filenames (no extension match) that should always be reviewed.
- * These are matched exactly against the basename.
+ * Filenames whose extension is absent or not in ALLOWED_EXTENSIONS but which are
+ * still worth reviewing. Matched exactly against the basename.
+ *
+ * Keep this in sync with FILE_RULES in ./rules.ts and the path patterns in
+ * context/diff/scorer.ts — a file those declare reviewable but that fails
+ * isAllowedFile() is silently dropped before scoring ever runs.
  */
 exports.ALLOWED_FILENAMES = new Set([
     'Dockerfile',
@@ -264583,9 +264662,15 @@ exports.ALLOWED_FILENAMES = new Set([
     'Procfile',
     'Gemfile',
     'Rakefile',
+    'CODEOWNERS',
+    'go.mod',
     '.eslintrc',
     '.prettierrc',
     '.babelrc',
+    // Scored 0.35 by the risk scorer — committed placeholders leak real secrets often enough to review.
+    '.env.example',
+    '.env.sample',
+    '.env.template',
 ]);
 /** Returns true if the file should be included for review based on its extension or name. */
 function isAllowedFile(filePath) {
@@ -266076,6 +266161,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.RISK_PATH_PATTERNS = exports.THRESHOLDS = void 0;
 exports.scoreFile = scoreFile;
 const loader_1 = __nccwpck_require__(5584);
+const rules_1 = __nccwpck_require__(316);
 exports.THRESHOLDS = {
     HIGH_RISK: 0.6,
     MEDIUM_RISK: 0.3,
@@ -266126,6 +266212,12 @@ function scoreFile(filePath, diffHunk, options = {}) {
             score = exports.THRESHOLDS.HIGH_RISK;
         }
     }
+    // Per-filetype risk weight (config/file-rules): scale scrutiny up for
+    // high-blast-radius types (C/C++, IaC, shell, SQL) and down for low-risk
+    // ones (stylesheets, data configs). Multiplicative so a 0.00 hard-skip stays
+    // skipped and high-risk path scores saturate at the 1.0 cap.
+    const riskWeight = (0, rules_1.getFileRiskWeight)(filePath);
+    score = score * riskWeight;
     return Math.min(1.0, score);
 }
 
@@ -266180,6 +266272,21 @@ const tools_2 = __nccwpck_require__(8464);
 function specialistUsesToolLoop(categoryId) {
     return tools_1.TOOL_CATEGORIES.has(categoryId);
 }
+/**
+ * Hard cap on caller subagents dispatched per `find_references` hit. Without
+ * this, a symbol with many callers fans out to one LLM call each with no bound.
+ * Candidates are ranked by reference quality (semantic > syntactic > text-match)
+ * so the cap keeps the highest-signal callers.
+ */
+const MAX_CALLER_SUBAGENTS = 5;
+const REFERENCE_SOURCE_RANK = {
+    semantic: 0,
+    syntactic: 1,
+    'text-match': 2,
+};
+function rankCallersByQuality(candidates) {
+    return [...candidates].sort((a, b) => REFERENCE_SOURCE_RANK[a.source] - REFERENCE_SOURCE_RANK[b.source]);
+}
 async function runSpecialistToolLoop(provider, categoryId, systemPrompt, userPrompt, toolCtx, timeoutMs, debugRecorder) {
     const deadline = Date.now() + timeoutMs;
     let totalInput = 0;
@@ -266201,8 +266308,13 @@ async function runSpecialistToolLoop(provider, categoryId, systemPrompt, userPro
             (callerVerdicts.length > 0
                 ? `\n\n## Caller assessments\n${formatCallerVerdicts(callerVerdicts)}`
                 : '');
+        const loopSystemPrompt = systemPrompt + tools_1.TOOL_INSTRUCTIONS;
         const response = await provider.review({
-            systemPrompt: systemPrompt + tools_1.TOOL_INSTRUCTIONS,
+            systemPrompt: loopSystemPrompt,
+            // The system prompt is identical across every hop, so cache it once and
+            // let subsequent hops (and other specialists sharing the prefix) hit the
+            // provider prompt cache instead of re-billing the full prefix each time.
+            systemPromptBlocks: [{ text: loopSystemPrompt, ephemeralCache: true }],
             userPrompt: hopPrompt,
             timeoutMs: remainingMs,
         });
@@ -266222,10 +266334,11 @@ async function runSpecialistToolLoop(provider, categoryId, systemPrompt, userPro
             }
         }
         if (parsed.action === 'done') {
-            const findings = (parsed.findings ?? []).map((f) => ({
-                ...f,
-                category: f.category ?? categoryId,
-            }));
+            const findings = (0, findings_1.sanitizeSpecialistFindings)(parsed.findings, categoryId);
+            const dropped = (parsed.findings?.length ?? 0) - findings.length;
+            if (dropped > 0) {
+                core.info(`[${categoryId}] Dropped ${dropped} vague/low-confidence/malformed finding(s)`);
+            }
             return { findings, tokens: { input: totalInput, output: totalOutput }, apiCalls };
         }
         toolResults.length = 0;
@@ -266328,7 +266441,14 @@ function formatCallerVerdicts(verdicts) {
 async function dispatchCallerSubagents(provider, categoryId, candidates, toolReq, toolCtx, deadline) {
     const symbol = String(toolReq.arguments?.symbol ?? 'unknown');
     const targetPath = String(toolReq.arguments?.file_path ?? 'unknown');
-    const tasks = candidates.map(async (caller) => {
+    const ranked = rankCallersByQuality(candidates);
+    const assessed = ranked.slice(0, MAX_CALLER_SUBAGENTS);
+    const omitted = ranked.slice(MAX_CALLER_SUBAGENTS);
+    if (omitted.length > 0) {
+        core.info(`[${categoryId}] Caller cap reached: assessing ${assessed.length}/${candidates.length} ` +
+            `caller(s) of "${symbol}", ${omitted.length} omitted`);
+    }
+    const tasks = assessed.map(async (caller) => {
         const remainingMs = deadline - Date.now();
         if (remainingMs <= 0) {
             return {
@@ -266354,6 +266474,7 @@ Does this specific caller break due to the change?`;
         try {
             const response = await provider.review({
                 systemPrompt,
+                systemPromptBlocks: [{ text: systemPrompt, ephemeralCache: true }],
                 userPrompt,
                 timeoutMs: remainingMs,
             });
@@ -266384,10 +266505,17 @@ Does this specific caller break due to the change?`;
         output += r.tokens.output;
         verdicts.push({ caller: r.caller, breaks: r.breaks, why: r.why });
     }
+    for (const caller of omitted) {
+        verdicts.push({
+            caller,
+            breaks: 'uncertain',
+            why: `Not assessed (caller cap of ${MAX_CALLER_SUBAGENTS} reached)`,
+        });
+    }
     return {
         verdicts,
         tokens: { input, output },
-        apiCalls: candidates.length,
+        apiCalls: assessed.length,
     };
 }
 function parseCallerVerdict(text) {
@@ -266496,9 +266624,9 @@ function createToolContext(fileContents, ignorePatterns = [], existingCache) {
 function isSearchableFile(filePath, ignorePatterns) {
     if (!(0, filter_1.isAllowedFile)(filePath))
         return false;
-    if ((0, filter_1.isBinaryFile)(filePath))
-        return false;
     if ((0, filter_1.shouldIgnoreFile)(filePath, ignorePatterns))
+        return false;
+    if ((0, filter_1.isBinaryFile)(filePath))
         return false;
     return true;
 }
@@ -267814,6 +267942,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.partitionFiles = partitionFiles;
 exports.getPullRequestData = getPullRequestData;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
@@ -267841,9 +267970,25 @@ async function listAllChangedFiles(octokit, owner, repo, prNumber) {
     return filenames;
 }
 function partitionFiles(allFiles, ignorePatterns) {
-    const ignoredFiles = allFiles.filter((f) => (0, filter_1.shouldIgnoreFile)(f, ignorePatterns));
-    const reviewedFiles = allFiles.filter((f) => !(0, filter_1.shouldIgnoreFile)(f, ignorePatterns));
-    return { reviewedFiles, ignoredFiles };
+    const reviewedFiles = [];
+    const ignoredFiles = [];
+    const disallowedFiles = [];
+    for (const file of allFiles) {
+        if (!(0, filter_1.isAllowedFile)(file)) {
+            disallowedFiles.push(file);
+            ignoredFiles.push(file);
+        }
+        else if ((0, filter_1.shouldIgnoreFile)(file, ignorePatterns)) {
+            ignoredFiles.push(file);
+        }
+        else {
+            reviewedFiles.push(file);
+        }
+    }
+    return { reviewedFiles, ignoredFiles, disallowedFiles };
+}
+function preview(files, limit = 10) {
+    return `${files.slice(0, limit).join(', ')}${files.length > limit ? '...' : ''}`;
 }
 /**
  * Fetch the incremental diff between two commits using the compare API.
@@ -267927,13 +268072,19 @@ async function getPullRequestData(token, options) {
         rawDiff = fullDiff;
         allFiles = await listAllChangedFiles(octokit, owner, repo, prNumber);
     }
-    const { reviewedFiles, ignoredFiles } = partitionFiles(allFiles, options.ignorePatterns);
-    if (ignoredFiles.length > 0) {
-        core.info(`Skipping ${ignoredFiles.length} ignored file(s): ${ignoredFiles.slice(0, 10).join(', ')}${ignoredFiles.length > 10 ? '...' : ''}`);
+    const { reviewedFiles, ignoredFiles, disallowedFiles } = partitionFiles(allFiles, options.ignorePatterns);
+    const disallowedSet = new Set(disallowedFiles);
+    const patternIgnored = ignoredFiles.filter((f) => !disallowedSet.has(f));
+    if (patternIgnored.length > 0) {
+        core.info(`Skipping ${patternIgnored.length} ignored file(s): ${preview(patternIgnored)}`);
+    }
+    if (disallowedFiles.length > 0) {
+        core.info(`Skipping ${disallowedFiles.length} file(s) with unsupported extensions: ` +
+            `${preview(disallowedFiles)}. Add the extension to ALLOWED_EXTENSIONS to review these.`);
     }
     const { diff, redactionCount } = await (0, diff_1.prepareDiffForReview)(rawDiff, new Set(ignoredFiles), { redactSecrets: true });
     if (reviewedFiles.length === 0) {
-        core.warning('No reviewable files after applying ignore patterns.');
+        core.warning('No reviewable files after applying the extension allowlist and ignore patterns.');
     }
     const filesToFetch = new Set(reviewedFiles);
     const fileContents = await (0, file_contents_1.fetchFileContents)(octokit, owner, repo, pr.head.ref, filesToFetch, config_1.MAX_FILE_SIZE, true);
@@ -267957,6 +268108,354 @@ async function getPullRequestData(token, options) {
         incrementalBaseSha,
     };
 }
+
+
+/***/ }),
+
+/***/ 6292:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.structuredFromHistoryFindings = exports.buildRunRecord = exports.FINDINGS_TABLE = exports.RUNS_TABLE = exports.SupabaseHistoryStore = void 0;
+exports.createHistoryStore = createHistoryStore;
+const core = __importStar(__nccwpck_require__(7484));
+const supabase_1 = __nccwpck_require__(1100);
+var supabase_2 = __nccwpck_require__(1100);
+Object.defineProperty(exports, "SupabaseHistoryStore", ({ enumerable: true, get: function () { return supabase_2.SupabaseHistoryStore; } }));
+Object.defineProperty(exports, "RUNS_TABLE", ({ enumerable: true, get: function () { return supabase_2.RUNS_TABLE; } }));
+Object.defineProperty(exports, "FINDINGS_TABLE", ({ enumerable: true, get: function () { return supabase_2.FINDINGS_TABLE; } }));
+var record_1 = __nccwpck_require__(5799);
+Object.defineProperty(exports, "buildRunRecord", ({ enumerable: true, get: function () { return record_1.buildRunRecord; } }));
+Object.defineProperty(exports, "structuredFromHistoryFindings", ({ enumerable: true, get: function () { return record_1.structuredFromHistoryFindings; } }));
+/**
+ * Returns a history store when both the URL and key are configured, otherwise
+ * null (history tracking is opt-in). A URL without a key is treated as a
+ * misconfiguration worth warning about rather than failing the run.
+ */
+function createHistoryStore(config) {
+    const hasUrl = config.supabaseUrl.length > 0;
+    const hasKey = config.supabaseKey.length > 0;
+    if (!hasUrl && !hasKey)
+        return null;
+    if (!hasUrl || !hasKey) {
+        core.warning(`[history] History tracking needs both supabase_url and supabase_key ` +
+            `(missing ${!hasUrl ? 'supabase_url' : 'supabase_key'}). Skipping history for this run.`);
+        return null;
+    }
+    return new supabase_1.SupabaseHistoryStore(config.supabaseUrl, config.supabaseKey);
+}
+
+
+/***/ }),
+
+/***/ 5799:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.buildRunRecord = buildRunRecord;
+exports.structuredFromHistoryFindings = structuredFromHistoryFindings;
+const node_crypto_1 = __nccwpck_require__(7598);
+const cost_1 = __nccwpck_require__(8666);
+const findings_1 = __nccwpck_require__(1439);
+/** Parse a numeric estimate out of the display-oriented estimateCost() string. */
+function costToNumber(model, inputTokens, outputTokens) {
+    const formatted = (0, cost_1.estimateCost)(model, inputTokens, outputTokens);
+    if (formatted === null)
+        return null;
+    // "<$0.001" means a real but negligible spend; record it as zero rather than null
+    // so the column distinguishes "too small to measure" from "unknown model".
+    if (formatted === '<$0.001')
+        return 0;
+    const parsed = Number.parseFloat(formatted.replace(/[^0-9.]/g, ''));
+    return Number.isFinite(parsed) ? parsed : null;
+}
+function countSeverity(findings, severity) {
+    return findings.filter((f) => f.severity === severity).length;
+}
+function intOrNull(value) {
+    if (!value)
+        return null;
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+function buildRunRecord(input) {
+    const { pr, config, repo } = input;
+    const findings = input.structured?.findings ?? [];
+    const runId = (0, node_crypto_1.randomUUID)();
+    const gh = input.githubContext ?? {};
+    const run = {
+        id: runId,
+        repo,
+        pr_number: pr.number,
+        head_sha: pr.headSha,
+        base_branch: pr.baseBranch,
+        head_branch: pr.headBranch,
+        pr_title: pr.title,
+        pr_author: pr.author,
+        provider: config.provider,
+        model: config.model,
+        categories: input.categories,
+        is_incremental: pr.isIncremental,
+        incremental_base_sha: pr.incrementalBaseSha ?? null,
+        cached: input.cached,
+        changed_files_count: pr.changedFiles.length,
+        reviewed_files_count: pr.reviewedFiles.length,
+        ignored_files_count: pr.ignoredFiles.length,
+        input_tokens: input.inputTokens,
+        output_tokens: input.outputTokens,
+        total_tokens: input.inputTokens + input.outputTokens,
+        api_calls: input.apiCalls,
+        estimated_cost_usd: costToNumber(config.model, input.inputTokens, input.outputTokens),
+        duration_ms: input.durationMs,
+        findings_count: findings.length,
+        critical_count: countSeverity(findings, 'critical'),
+        warning_count: countSeverity(findings, 'warning'),
+        suggestion_count: countSeverity(findings, 'suggestion'),
+        failed_specialists: (input.specialistResults ?? [])
+            .filter((r) => r.failed)
+            .map((r) => r.categoryId),
+        judge_unverified: input.structured?.unverified === true,
+        github_run_id: gh.runId ?? null,
+        github_run_attempt: intOrNull(gh.runAttempt),
+        github_actor: gh.actor ?? null,
+        github_workflow: gh.workflow ?? null,
+    };
+    const findingRecords = findings.map((f) => ({
+        id: (0, node_crypto_1.randomUUID)(),
+        run_id: runId,
+        repo,
+        pr_number: pr.number,
+        head_sha: pr.headSha,
+        fingerprint: (0, findings_1.findingFingerprint)(f),
+        category: f.category,
+        severity: f.severity,
+        confidence: f.confidence,
+        file: f.file ?? '',
+        line: typeof f.line === 'number' ? f.line : null,
+        code_snippet: f.codeSnippet ?? null,
+        message: f.message,
+    }));
+    return { run, findings: findingRecords };
+}
+/** Rebuild a StructuredReview from history rows so a same-SHA replay needs no LLM. */
+function structuredFromHistoryFindings(rows) {
+    const findings = rows.map((r) => ({
+        category: r.category,
+        severity: r.severity,
+        confidence: r.confidence,
+        file: r.file,
+        line: r.line ?? undefined,
+        codeSnippet: r.code_snippet ?? undefined,
+        message: r.message,
+    }));
+    return (0, findings_1.buildJudgeReviewFromDedup)(findings);
+}
+
+
+/***/ }),
+
+/***/ 1100:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.SupabaseHistoryStore = exports.FINDINGS_TABLE = exports.RUNS_TABLE = void 0;
+exports.postgrestBaseUrl = postgrestBaseUrl;
+const core = __importStar(__nccwpck_require__(7484));
+const retry_1 = __nccwpck_require__(9809);
+const sanitize_1 = __nccwpck_require__(5540);
+exports.RUNS_TABLE = 'pr_review_runs';
+exports.FINDINGS_TABLE = 'pr_review_findings';
+/**
+ * History writes are telemetry, so they get a much tighter budget than LLM
+ * calls: two attempts and 10s per attempt. A slow database should not hold up
+ * a PR check.
+ */
+const HISTORY_RETRY = { maxAttempts: 2, timeoutMs: 10_000, baseDelayMs: 500 };
+/** Findings are chunked so a PR with hundreds of findings cannot exceed request limits. */
+const INSERT_CHUNK_SIZE = 500;
+/**
+ * Hosted Supabase exposes PostgREST at /rest/v1. A local docker PostgREST
+ * (this repo's compose stack) serves tables at the origin root. Appending
+ * /rest/v1 there 404s — which is the failure local-review hits.
+ */
+function postgrestBaseUrl(supabaseUrl) {
+    const trimmed = supabaseUrl.replace(/\/+$/, '');
+    if (trimmed.endsWith('/rest/v1'))
+        return trimmed;
+    try {
+        const { hostname } = new URL(trimmed);
+        if (hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1') {
+            return trimmed;
+        }
+    }
+    catch {
+        // Fall through to the hosted-Supabase path.
+    }
+    return `${trimmed}/rest/v1`;
+}
+class SupabaseHistoryStore {
+    baseUrl;
+    key;
+    fetchImpl;
+    constructor(supabaseUrl, supabaseKey, fetchImpl) {
+        this.baseUrl = postgrestBaseUrl(supabaseUrl);
+        this.key = supabaseKey;
+        this.fetchImpl = fetchImpl ?? globalThis.fetch;
+    }
+    async record(run, findings) {
+        try {
+            // The run must land first — findings reference it by foreign key.
+            await this.insert(exports.RUNS_TABLE, [run]);
+            for (let i = 0; i < findings.length; i += INSERT_CHUNK_SIZE) {
+                await this.insert(exports.FINDINGS_TABLE, findings.slice(i, i + INSERT_CHUNK_SIZE));
+            }
+            core.info(`[history] Recorded run ${run.id} with ${findings.length} finding(s) to Supabase`);
+            return run.id;
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            core.warning(`[history] Failed to record run history: ${(0, sanitize_1.sanitizeErrorMessage)(message)}. ` +
+                `Review results are unaffected.`);
+            return null;
+        }
+    }
+    async findReviewForSha(repo, prNumber, headSha) {
+        try {
+            const runQs = `repo=eq.${encodeURIComponent(repo)}` +
+                `&pr_number=eq.${prNumber}` +
+                `&head_sha=eq.${encodeURIComponent(headSha)}` +
+                `&select=id,cached,created_at` +
+                `&order=created_at.desc` +
+                `&limit=20`;
+            const runs = await this.getJson(`${this.baseUrl}/${exports.RUNS_TABLE}?${runQs}`);
+            if (!runs || runs.length === 0)
+                return null;
+            const chosen = runs.find((r) => r.cached === false) ?? runs[0];
+            const findingQs = `run_id=eq.${encodeURIComponent(chosen.id)}&select=*`;
+            const findings = (await this.getJson(`${this.baseUrl}/${exports.FINDINGS_TABLE}?${findingQs}`)) ?? [];
+            return { runId: chosen.id, findings };
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            core.warning(`[history] Same-SHA lookup failed: ${(0, sanitize_1.sanitizeErrorMessage)(message)}. Running a full review.`);
+            return null;
+        }
+    }
+    async getJson(url) {
+        const response = await this.fetchImpl(url, {
+            method: 'GET',
+            headers: {
+                apikey: this.key,
+                Authorization: `Bearer ${this.key}`,
+                Accept: 'application/json',
+            },
+        });
+        if (!response.ok) {
+            const body = await response.text().catch(() => '');
+            throw Object.assign(new Error(`Supabase GET failed (${response.status}): ${body.slice(0, 300)}`), { status: response.status });
+        }
+        const text = await response.text();
+        if (!text)
+            return null;
+        return JSON.parse(text);
+    }
+    async insert(table, rows) {
+        if (rows.length === 0)
+            return;
+        await (0, retry_1.withRetry)(async () => {
+            const response = await this.fetchImpl(`${this.baseUrl}/${table}`, {
+                method: 'POST',
+                headers: {
+                    apikey: this.key,
+                    Authorization: `Bearer ${this.key}`,
+                    'Content-Type': 'application/json',
+                    // Skip the response body; we generate ids client-side and do not read them back.
+                    Prefer: 'return=minimal',
+                },
+                body: JSON.stringify(rows),
+            });
+            if (!response.ok) {
+                const body = await response.text().catch(() => '');
+                // Carry the status so withRetry's isRetryable() can distinguish a
+                // transient 503 from a permanent 401 or a schema mismatch (400/404).
+                throw Object.assign(new Error(`Supabase insert into ${table} failed (${response.status}): ${body.slice(0, 300)}`), { status: response.status });
+            }
+        }, HISTORY_RETRY);
+    }
+}
+exports.SupabaseHistoryStore = SupabaseHistoryStore;
 
 
 /***/ }),
@@ -268010,7 +268509,30 @@ const sanitize_1 = __nccwpck_require__(5540);
 const state_1 = __nccwpck_require__(2341);
 const findings_1 = __nccwpck_require__(1439);
 const format_1 = __nccwpck_require__(7550);
+const history_1 = __nccwpck_require__(6292);
 const MAX_OUTPUT_BYTES = 900_000;
+function githubRunContext() {
+    return {
+        runId: process.env.GITHUB_RUN_ID,
+        runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+        actor: process.env.GITHUB_ACTOR,
+        workflow: process.env.GITHUB_WORKFLOW,
+    };
+}
+/**
+ * Write one history row for this run. Best-effort by contract: the store
+ * swallows its own failures, and this always sets the output so downstream
+ * steps can branch on whether a row was written.
+ */
+async function recordHistory(store, input) {
+    if (!store) {
+        core.setOutput('history_run_id', '');
+        return;
+    }
+    const { run, findings } = (0, history_1.buildRunRecord)(input);
+    const runId = await store.record(run, findings);
+    core.setOutput('history_run_id', runId ?? '');
+}
 function buildStatePayload(headSha, reviewCount, findings, dismissedFingerprints) {
     return {
         lastReviewedSha: headSha,
@@ -268032,8 +268554,12 @@ function appendStateMarker(commentBody, state) {
 async function main() {
     try {
         core.info('AI PR Reviewer starting...');
+        const startedAt = Date.now();
         const config = (0, config_1.loadConfig)();
         core.info(`Provider: ${config.provider} | Model: ${config.model}`);
+        const historyStore = (0, history_1.createHistoryStore)(config.history);
+        if (historyStore)
+            core.info('History tracking enabled (Supabase).');
         const provider = (0, providers_1.createProvider)(config.provider, config.apiKey, config.model, config.azureEndpoint);
         const { owner, repo } = github.context.repo;
         const fullRepo = `${owner}/${repo}`;
@@ -268069,11 +268595,13 @@ async function main() {
             prevState.lastReviewedSha === headSha) {
             core.info(`Commit ${headSha.slice(0, 7)} already reviewed — reusing cached findings ` +
                 `(reply /dismiss on inline comments to suppress issues).`);
+            // No lastReviewedSha passed, so this is the full PR diff — a superset of whatever
+            // (possibly incremental) diff the cached findings were originally anchored against.
             const pr = await (0, github_1.getPullRequestData)(config.githubToken, {
                 ignorePatterns: config.ignorePatterns,
             });
             const cachedFindings = (0, findings_1.filterDismissedFindings)((0, state_1.fromStoredFindings)(prevState.storedFindings ?? []), suppression.dismissedFingerprints);
-            const structured = (0, findings_1.buildJudgeReviewFromDedup)(cachedFindings);
+            const { structured } = (0, agents_1.filterFindingsToDiff)((0, findings_1.buildJudgeReviewFromDedup)(cachedFindings), pr.diff);
             const categoryIds = Object.entries(config.categories)
                 .filter(([, g]) => g.enabled)
                 .map(([id]) => id);
@@ -268087,7 +268615,7 @@ async function main() {
                 specialistResults: [],
             });
             const reviewCount = (prevState.reviewCount ?? 0) + 1;
-            const state = buildStatePayload(headSha, reviewCount, (0, state_1.toStoredFindings)(cachedFindings), dismissedFingerprints);
+            const state = buildStatePayload(headSha, reviewCount, (0, state_1.toStoredFindings)(structured.findings), dismissedFingerprints);
             core.setOutput('review_body', markdown);
             core.setOutput('has_critical_issues', (0, findings_1.hasCriticalFindings)(structured).toString());
             core.setOutput('categories_reviewed', categoryIds.join(','));
@@ -268103,6 +268631,19 @@ async function main() {
             if (stateStore) {
                 await persistState(stateStore, config.stateStore, fullRepo, pr.number, state);
             }
+            await recordHistory(historyStore, {
+                repo: fullRepo,
+                pr,
+                config,
+                structured,
+                categories: categoryIds,
+                inputTokens: 0,
+                outputTokens: 0,
+                apiCalls: 0,
+                durationMs: Date.now() - startedAt,
+                cached: true,
+                githubContext: githubRunContext(),
+            });
             core.info('Review complete (cached).');
             return;
         }
@@ -268124,6 +268665,19 @@ async function main() {
             core.setOutput('has_critical_issues', 'false');
             core.setOutput('categories_reviewed', '');
             core.setOutput('findings_count', '0');
+            // Recorded so the history shows a no-op push rather than a gap.
+            await recordHistory(historyStore, {
+                repo: fullRepo,
+                pr,
+                config,
+                categories: [],
+                inputTokens: 0,
+                outputTokens: 0,
+                apiCalls: 0,
+                durationMs: Date.now() - startedAt,
+                cached: false,
+                githubContext: githubRunContext(),
+            });
             return;
         }
         const result = await (0, agents_1.runReview)(provider, config, pr, {
@@ -268155,6 +268709,20 @@ async function main() {
         if (stateStore) {
             await persistState(stateStore, config.stateStore, fullRepo, pr.number, state);
         }
+        await recordHistory(historyStore, {
+            repo: fullRepo,
+            pr,
+            config,
+            structured: result.structured,
+            categories: result.categories,
+            inputTokens: result.inputTokens,
+            outputTokens: result.outputTokens,
+            apiCalls: result.apiCalls,
+            durationMs: Date.now() - startedAt,
+            cached: false,
+            specialistResults: result.specialistResults,
+            githubContext: githubRunContext(),
+        });
         core.info('Review complete.');
     }
     catch (error) {
@@ -268255,6 +268823,7 @@ exports.filterDismissedFindings = filterDismissedFindings;
 exports.parseStructuredReview = parseStructuredReview;
 exports.buildJudgeReviewFromDedup = buildJudgeReviewFromDedup;
 exports.parseSpecialistFindings = parseSpecialistFindings;
+exports.sanitizeSpecialistFindings = sanitizeSpecialistFindings;
 exports.hasCriticalFindings = hasCriticalFindings;
 exports.sortFindingsForReview = sortFindingsForReview;
 exports.parseDedupedFindings = parseDedupedFindings;
@@ -268384,10 +268953,18 @@ function buildJudgeReviewFromDedup(findings) {
 function parseSpecialistFindings(raw, categoryId) {
     const json = extractJson(raw);
     const parsed = JSON.parse(json);
+    return sanitizeSpecialistFindings(parsed.findings, categoryId);
+}
+/**
+ * Validate and normalize already-parsed specialist findings.
+ * Every specialist path must run findings through this — the tool loop returns
+ * pre-parsed objects, so it cannot rely on parseSpecialistFindings above.
+ */
+function sanitizeSpecialistFindings(items, categoryId) {
     const findings = [];
-    if (!Array.isArray(parsed.findings))
+    if (!Array.isArray(items))
         return findings;
-    for (const item of parsed.findings) {
+    for (const item of items) {
         if (!item || typeof item !== 'object')
             continue;
         const f = item;
@@ -268406,7 +268983,7 @@ function parseSpecialistFindings(raw, categoryId) {
         if (!f.file || typeof f.file !== 'string')
             continue;
         findings.push({
-            category: categoryId,
+            category: typeof f.category === 'string' && f.category ? f.category : categoryId,
             severity: severity,
             confidence,
             file: f.file,
@@ -269177,6 +269754,10 @@ function sanitizeErrorMessage(message) {
     result = result.replace(/(?:AKIA|ASIA)[0-9A-Z]{16}/g, 'AKIA***');
     result = result.replace(/gh[pousr]_[A-Za-z0-9_]{20,}/g, 'gh*_***');
     result = result.replace(/xox[baprs]-[A-Za-z0-9-]{10,}/g, 'xox*-***');
+    // Supabase API keys: current sb_secret_/sb_publishable_ format, and the
+    // legacy anon/service_role keys, which are JWTs beginning with the eyJ header.
+    result = result.replace(/sb_(?:secret|publishable)_[A-Za-z0-9\-_]{10,}/g, 'sb_***');
+    result = result.replace(/eyJ[A-Za-z0-9\-_]{10,}\.[A-Za-z0-9\-_]{10,}\.[A-Za-z0-9\-_]+/g, 'eyJ***');
     result = result.replace(/Bearer\s+[A-Za-z0-9\-._~+/]{10,}=*/gi, 'Bearer ***');
     return result;
 }

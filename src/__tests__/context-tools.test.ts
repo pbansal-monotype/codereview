@@ -8,6 +8,8 @@ import {
   readFile,
   fileImportsTarget,
 } from '../context/on-demand/tools';
+import { runSpecialistToolLoop } from '../context/on-demand/tool-loop';
+import type { AIProvider, ReviewRequest, ReviewResponse } from '../providers';
 
 const LOW_RISK_DIFF =
   'diff --git a/docs/note.txt b/docs/note.txt\n' +
@@ -104,6 +106,75 @@ describe('context tools', () => {
       'src/util/helper.ts',
     );
     assert.equal(imports, true);
+  });
+});
+
+describe('tool loop finding validation', () => {
+  function stubProvider(review: string): AIProvider {
+    return {
+      async review(_request: ReviewRequest): Promise<ReviewResponse> {
+        return { review, tokensUsed: 0, inputTokens: 0, outputTokens: 0 };
+      },
+    };
+  }
+
+  async function runWithDoneResponse(findings: unknown[]) {
+    const provider = stubProvider(JSON.stringify({ action: 'done', findings }));
+    return runSpecialistToolLoop(
+      provider,
+      'security',
+      'system',
+      'user',
+      createToolContext({ 'src/auth.ts': 'export const a = 1;\n' }),
+      5_000,
+    );
+  }
+
+  it('drops low-confidence findings returned by a done response', async () => {
+    const result = await runWithDoneResponse([
+      {
+        severity: 'warning',
+        confidence: 'low',
+        file: 'src/auth.ts',
+        message: 'Token comparison is not constant-time → timing leak → use timingSafeEqual',
+      },
+    ]);
+    assert.deepEqual(result.findings, []);
+  });
+
+  it('drops vaguely-phrased findings returned by a done response', async () => {
+    const result = await runWithDoneResponse([
+      {
+        severity: 'warning',
+        confidence: 'high',
+        file: 'src/auth.ts',
+        message: 'Ensure the session token is validated before use',
+      },
+    ]);
+    assert.deepEqual(result.findings, []);
+  });
+
+  it('drops findings with no file or an invalid severity', async () => {
+    const result = await runWithDoneResponse([
+      { severity: 'warning', confidence: 'high', message: 'Missing file field → cannot anchor' },
+      { severity: 'nitpick', confidence: 'high', file: 'src/auth.ts', message: 'Bad severity' },
+    ]);
+    assert.deepEqual(result.findings, []);
+  });
+
+  it('keeps well-formed findings and stamps the category', async () => {
+    const result = await runWithDoneResponse([
+      {
+        severity: 'critical',
+        confidence: 'high',
+        file: 'src/auth.ts',
+        line: 1,
+        message: 'Hardcoded secret in auth module → credential leak → move to env var',
+      },
+    ]);
+    assert.equal(result.findings.length, 1);
+    assert.equal(result.findings[0].category, 'security');
+    assert.equal(result.findings[0].severity, 'critical');
   });
 });
 

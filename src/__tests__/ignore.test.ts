@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { shouldIgnoreFile, filterDiffByFiles } from '../filter';
+import { shouldIgnoreFile, filterDiffByFiles, isAllowedFile } from '../filter';
+import { partitionFiles } from '../github/pr-data';
 
 describe('shouldIgnoreFile', () => {
   it('ignores lockfiles by default', () => {
@@ -31,6 +32,78 @@ describe('shouldIgnoreFile', () => {
 
   it('does not ignore .env.example — reviewed as diff-only via risk scorer', () => {
     assert.equal(shouldIgnoreFile('.env.example', []), false);
+  });
+});
+
+describe('partitionFiles', () => {
+  it('rejects files whose extension is not on the allowlist', () => {
+    const { reviewedFiles, ignoredFiles, disallowedFiles } = partitionFiles(
+      ['src/index.ts', 'assets/logo.psd', 'notes.md'],
+      [],
+    );
+
+    assert.deepEqual(reviewedFiles, ['src/index.ts']);
+    assert.deepEqual(disallowedFiles, ['assets/logo.psd', 'notes.md']);
+    // Disallowed files must also land in ignoredFiles so they are stripped from the diff.
+    assert.deepEqual(ignoredFiles, ['assets/logo.psd', 'notes.md']);
+  });
+
+  it('reports extension rejections separately from ignore-pattern matches', () => {
+    const { ignoredFiles, disallowedFiles } = partitionFiles(
+      ['package-lock.json', 'assets/logo.psd'],
+      [],
+    );
+
+    assert.deepEqual(disallowedFiles, ['assets/logo.psd']);
+    assert.deepEqual(ignoredFiles.sort(), ['assets/logo.psd', 'package-lock.json']);
+  });
+
+  it('keeps allowed files that no ignore pattern matches', () => {
+    const { reviewedFiles, ignoredFiles, disallowedFiles } = partitionFiles(
+      ['src/auth/login.ts', 'Dockerfile', 'go.mod', '.env.example'],
+      [],
+    );
+
+    assert.deepEqual(reviewedFiles, ['src/auth/login.ts', 'Dockerfile', 'go.mod', '.env.example']);
+    assert.deepEqual(ignoredFiles, []);
+    assert.deepEqual(disallowedFiles, []);
+  });
+
+  it('still honours custom ignore patterns for allowed extensions', () => {
+    const { reviewedFiles, disallowedFiles } = partitionFiles(
+      ['src/generated/api.ts', 'src/app.ts'],
+      ['**/generated/**'],
+    );
+
+    assert.deepEqual(reviewedFiles, ['src/app.ts']);
+    assert.deepEqual(disallowedFiles, []);
+  });
+});
+
+describe('isAllowedFile', () => {
+  it('allows every file type declared reviewable by FILE_RULES', () => {
+    for (const path of [
+      'package.json',
+      'requirements.txt',
+      'pyproject.toml',
+      'Cargo.toml',
+      'go.mod',
+      'Gemfile',
+      'pom.xml',
+      'build.gradle',
+      'build.gradle.kts',
+      'Dockerfile',
+      'main.tf',
+      'schema.sql',
+      '.env.example',
+    ]) {
+      assert.equal(isAllowedFile(path), true, `expected ${path} to be reviewable`);
+    }
+  });
+
+  it('rejects binaries and unknown types', () => {
+    assert.equal(isAllowedFile('assets/logo.psd'), false);
+    assert.equal(isAllowedFile('LICENSE'), false);
   });
 });
 

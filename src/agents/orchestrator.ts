@@ -13,7 +13,7 @@ import { ToolLoopDebugRecorder } from '../output/debug';
 import { collectSpecialistFindings } from '../config/prompts';
 import type { FindingSuppression } from '../state/suppression';
 
-function filterFindingsToDiff(
+export function filterFindingsToDiff(
   structured: StructuredReview,
   diff: string,
 ): { structured: StructuredReview; dropped: Finding[] } {
@@ -79,6 +79,8 @@ export async function runReview(
       tokensUsed: 0,
       inputTokens: 0,
       outputTokens: 0,
+      apiCalls: 0,
+      specialistResults: [],
     };
   }
 
@@ -91,6 +93,8 @@ export async function runReview(
       tokensUsed: 0,
       inputTokens: 0,
       outputTokens: 0,
+      apiCalls: 0,
+      specialistResults: [],
     };
   }
 
@@ -209,7 +213,7 @@ export async function runReview(
   const totalOutput =
     specialistResults.reduce((sum, r) => sum + r.tokens.output, 0) +
     judgeTokens.output;
-  const apiCalls = specialistApiCalls + 1; // +1 for judge
+  const apiCalls = specialistApiCalls + judgeResult.apiCalls; // judge may skip the LLM
 
   const markdown = formatReviewMarkdown({
     structured,
@@ -240,5 +244,7 @@ export async function runReview(
     tokensUsed: totalInput + totalOutput,
     inputTokens: totalInput,
     outputTokens: totalOutput,
+    apiCalls,
+    specialistResults,
   };
 }

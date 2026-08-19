@@ -170,6 +170,8 @@ The system has multiple layers to prevent low-quality findings:
 | `incremental_review` | No | `true` | Only review changes since last reviewed commit |
 | `state_store` | No | `comment-marker` | `comment-marker`, `gist`, or `none` — where review state is persisted |
 | `state_gist_id` | No | — | Gist ID when `state_store=gist` |
+| `supabase_url` | No | — | Supabase project URL — enables run/finding history tracking |
+| `supabase_key` | No | — | Supabase secret key (`sb_secret_...`). Required when `supabase_url` is set |
 | `repo_context` | No | — | Repository overview (tech stack, architecture, key files) |
 | `review_policy` | No | — | Review policy and standards injected into all agent prompts |
 | `ignore_paths` | No | — | Glob patterns to skip (e.g. `**/migrations/**`) |
@@ -233,6 +235,8 @@ env:
 | `repo_context` | `REPO_CONTEXT` |
 | `review_policy` | `REVIEW_POLICY` |
 | `ignore_paths` | `IGNORE_PATHS` |
+| `supabase_url` | `SUPABASE_URL` |
+| `supabase_key` | `SUPABASE_KEY` |
 
 </details>
 
@@ -244,6 +248,70 @@ env:
 | `has_critical_issues` | `true` if critical findings remain after dismiss filter — use for merge gates |
 | `categories_reviewed` | Comma-separated list of categories reviewed |
 | `findings_count` | Total number of structured findings |
+| `history_run_id` | UUID of the recorded history row (empty when history is disabled) |
+
+## Tracking review history
+
+Optionally record every run and every finding to a Supabase (Postgres) database, so you can trend cost, latency, and bug counts across PRs over time.
+
+**1. Create the tables.** Paste [`src/history/schema.sql`](src/history/schema.sql) into the Supabase SQL editor, or:
+
+```bash
+psql "$DATABASE_URL" -f src/history/schema.sql
+```
+
+**2. Pass the credentials.** Use a **secret** key (Settings → API Keys → Secret keys), never a publishable one:
+
+```yaml
+- uses: pbansal-monotype/codereview@main
+  with:
+    supabase_url: https://abcdefgh.supabase.co
+    supabase_key: ${{ secrets.SUPABASE_KEY }}
+```
+
+You get two append-only tables: `pr_review_runs` (one row per run — tokens, cost, duration, findings by severity, failed specialists, plus the Actions run id) and `pr_review_findings` (one row per finding — severity, confidence, file, line, message, and a stable `fingerprint`).
+
+Since the `fingerprint` is stable across runs, you can track a single bug's lifetime:
+
+```sql
+-- Bugs that survived the most reviews without being fixed
+select fingerprint, severity, file, min(message) as message,
+       count(*) as seen_in_runs, max(created_at) as last_seen
+from pr_review_findings
+where repo = 'acme/widgets'
+group by fingerprint, severity, file
+having count(*) > 1
+order by seen_in_runs desc;
+```
+
+```sql
+-- Spend and latency per PR, excluding cached replays
+select pr_number, sum(estimated_cost_usd) as usd,
+       sum(total_tokens) as tokens, round(avg(duration_ms) / 1000.0, 1) as avg_secs
+from pr_review_runs
+where repo = 'acme/widgets' and not cached
+group by pr_number
+order by usd desc nulls last;
+```
+
+History writes are **best-effort**: if the database is unreachable or the key is wrong, the action logs a warning and the review proceeds normally. Leave `supabase_url` unset to disable tracking entirely.
+
+### Local history DB (Docker)
+
+For `npm run local-review`, you can run a local Postgres + PostgREST stack that speaks the same REST API:
+
+```bash
+cp .env.example .env   # fill GITHUB_TOKEN + LLM keys; SUPABASE_* already point at localhost
+docker compose up -d   # or: npm run history-db:up
+npm run local-review -- --repo owner/name --pr 123
+```
+
+- API: `http://127.0.0.1:54321` (PostgREST)
+- Postgres: `localhost:5432` / db `pr_review_history` / user+pass `postgres`
+- Schema is applied from `src/history/schema.sql` on first boot
+- The local `SUPABASE_KEY` in `.env.example` is a demo JWT for localhost only — do not use it against a real Supabase project
+
+The CLI records a history row after each local review when `SUPABASE_URL` and `SUPABASE_KEY` are set.
 
 ## Architecture
 
@@ -256,6 +324,7 @@ src/
 ├── context/             # Diff scoring, blast radius, on-demand tools
 ├── github/              # PR data, comments, dismissals
 ├── state/               # ReviewState persistence + suppression
+├── history/             # Optional append-only run/finding log (Supabase)
 ├── output/              # Finding parsers, markdown format
 ├── providers/           # Anthropic, OpenAI, Azure
 └── index.ts             # GitHub Action entry point

@@ -3,15 +3,21 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { loadConfig, MAX_FILE_SIZE } from '../config';
 import { createProvider } from '../providers';
-import { shouldIgnoreFile } from '../filter';
 import { prepareDiffForReview } from '../context/diff';
+import { partitionFiles } from '../github/pr-data';
 import { fetchFileContents } from '../github/file-contents';
-import { getOctokit } from '../github/client';
+import { getOctokit, type Octokit } from '../github/client';
 import { runReview } from '../agents';
+import { formatReviewMarkdown } from '../output/format';
+import { hasCriticalFindings } from '../output/findings';
+import {
+  buildRunRecord,
+  createHistoryStore,
+  structuredFromHistoryFindings,
+} from '../history';
 import type { PullRequestData } from '../github';
 
-function loadDotEnv(): void {
-  const envPath = path.resolve(process.cwd(), '.env');
+export function loadDotEnv(envPath = path.resolve(process.cwd(), '.env')): void {
   if (!fs.existsSync(envPath)) return;
 
   const contents = fs.readFileSync(envPath, 'utf8');
@@ -26,10 +32,16 @@ function loadDotEnv(): void {
     process.env[key] = value;
   }
 }
-function parseArgs(argv: string[]): { repo: string; pr: number; debug: boolean } {
+export function parseArgs(argv: string[]): {
+  repo: string;
+  pr: number;
+  debug: boolean;
+  force: boolean;
+} {
   let repo = '';
   let prStr = '';
   let debug = true; // local-review is for testing — include full stats by default
+  let force = false;
   const unknown: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
@@ -42,6 +54,8 @@ function parseArgs(argv: string[]): { repo: string; pr: number; debug: boolean }
       debug = true;
     } else if (arg === '--no-debug') {
       debug = false;
+    } else if (arg === '--force' || arg === '-f') {
+      force = true;
     } else if (arg === '--') {
       // npm/ts-node argument separator — skip
     } else if (arg.startsWith('--')) {
@@ -61,7 +75,7 @@ function parseArgs(argv: string[]): { repo: string; pr: number; debug: boolean }
 
   if (!repo || !prStr) {
     throw new Error(
-      'Usage: ts-node src/cli/local-review.ts --repo owner/name --pr 123 [--debug | --no-debug]',
+      'Usage: ts-node src/cli/local-review.ts --repo owner/name --pr 123 [--debug | --no-debug] [--force]',
     );
   }
 
@@ -70,21 +84,20 @@ function parseArgs(argv: string[]): { repo: string; pr: number; debug: boolean }
     throw new Error(`Invalid --pr value: "${prStr}"`);
   }
 
-  return { repo, pr, debug };
+  return { repo, pr, debug, force };
 }
 
-async function buildPullRequestData(
+export async function buildPullRequestData(
   repoSlug: string,
   prNumber: number,
   githubToken: string,
   ignorePatterns: string[],
+  octokit: Octokit = getOctokit(githubToken),
 ): Promise<PullRequestData> {
   const [owner, repo] = repoSlug.split('/');
   if (!owner || !repo) {
     throw new Error(`Invalid --repo value: "${repoSlug}". Expected owner/name.`);
   }
-
-  const octokit = getOctokit(githubToken);
 
   const { data: pr } = await octokit.rest.pulls.get({
     owner,
@@ -118,8 +131,7 @@ async function buildPullRequestData(
     page += 1;
   }
 
-  const ignoredFiles = allFiles.filter((f) => shouldIgnoreFile(f, ignorePatterns));
-  const reviewedFiles = allFiles.filter((f) => !shouldIgnoreFile(f, ignorePatterns));
+  const { reviewedFiles, ignoredFiles } = partitionFiles(allFiles, ignorePatterns);
 
   const { diff, redactionCount } = await prepareDiffForReview(
     rawDiff,
@@ -160,7 +172,7 @@ async function main(): Promise<void> {
   try {
     loadDotEnv();
 
-    const { repo, pr, debug } = parseArgs(process.argv.slice(2));
+    const { repo, pr, debug, force } = parseArgs(process.argv.slice(2));
 
     // eslint-disable-next-line no-console
     console.log(`Debug stats: ${debug ? 'on' : 'off'}`);
@@ -180,6 +192,13 @@ async function main(): Promise<void> {
       config.azureEndpoint,
     );
 
+    const historyStore = createHistoryStore(config.history);
+    if (historyStore) {
+      // eslint-disable-next-line no-console
+      console.log(`History tracking enabled → ${config.history.supabaseUrl}`);
+    }
+
+    const startedAt = Date.now();
     const prData = await buildPullRequestData(
       repo,
       pr,
@@ -187,7 +206,80 @@ async function main(): Promise<void> {
       config.ignorePatterns,
     );
 
+    const enabledCategories = Object.entries(config.categories)
+      .filter(([, g]) => g.enabled)
+      .map(([id]) => id);
+
+    if (!force && historyStore) {
+      const prior = await historyStore.findReviewForSha(repo, pr, prData.headSha);
+      if (prior) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `Commit ${prData.headSha.slice(0, 7)} already reviewed (run ${prior.runId}) — ` +
+          `reusing ${prior.findings.length} cached finding(s). Pass --force to re-run the LLM.`,
+        );
+        const structured = structuredFromHistoryFindings(prior.findings);
+        const markdown = formatReviewMarkdown({
+          structured,
+          pr: prData,
+          config,
+          categories: enabledCategories,
+          totalTokens: { input: 0, output: 0 },
+          apiCalls: 0,
+          specialistResults: [],
+        });
+        const { run, findings } = buildRunRecord({
+          repo,
+          pr: prData,
+          config,
+          structured,
+          categories: enabledCategories,
+          inputTokens: 0,
+          outputTokens: 0,
+          apiCalls: 0,
+          durationMs: Date.now() - startedAt,
+          cached: true,
+          githubContext: { actor: 'local-review', workflow: 'local-review' },
+        });
+        const runId = await historyStore.record(run, findings);
+        const outPath = path.resolve(process.cwd(), 'test.md');
+        fs.writeFileSync(outPath, markdown, 'utf8');
+        // eslint-disable-next-line no-console
+        console.log(runId ? `History run id: ${runId} (cached)` : 'History write failed (see warnings above)');
+        // eslint-disable-next-line no-console
+        console.log(`Wrote local review markdown to ${outPath}`);
+        // eslint-disable-next-line no-console
+        console.log(
+          `has_critical_issues=${hasCriticalFindings(structured)} findings_count=${structured.findings.length} (cached, no LLM)`,
+        );
+        return;
+      }
+    }
+
     const result = await runReview(provider, config, prData, { debug });
+
+    if (historyStore) {
+      const { run, findings } = buildRunRecord({
+        repo,
+        pr: prData,
+        config,
+        structured: result.structured,
+        categories: result.categories,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        apiCalls: result.apiCalls,
+        durationMs: Date.now() - startedAt,
+        cached: false,
+        specialistResults: result.specialistResults,
+        githubContext: {
+          actor: 'local-review',
+          workflow: 'local-review',
+        },
+      });
+      const runId = await historyStore.record(run, findings);
+      // eslint-disable-next-line no-console
+      console.log(runId ? `History run id: ${runId}` : 'History write failed (see warnings above)');
+    }
 
     const outPath = path.resolve(process.cwd(), 'test.md');
     fs.writeFileSync(outPath, result.markdown, 'utf8');
@@ -206,5 +298,7 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+if (require.main === module) {
+  void main();
+}
 

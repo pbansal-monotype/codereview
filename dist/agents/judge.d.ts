@@ -5,6 +5,7 @@ import { SpecialistResult, TokenUsage } from './types';
 interface JudgeResult {
     structured: StructuredReview;
     tokens: TokenUsage;
+    apiCalls: number;
 }
 export declare function runJudge(provider: AIProvider, specialistResults: SpecialistResult[], config: ReviewConfig): Promise<JudgeResult>;
 export {};

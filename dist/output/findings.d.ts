@@ -41,6 +41,12 @@ export declare function buildJudgeReviewFromDedup(findings: Finding[]): Structur
  * Simpler schema: { findings: [{ severity, confidence, file, line, message }] }
  */
 export declare function parseSpecialistFindings(raw: string, categoryId: string): Finding[];
+/**
+ * Validate and normalize already-parsed specialist findings.
+ * Every specialist path must run findings through this — the tool loop returns
+ * pre-parsed objects, so it cannot rely on parseSpecialistFindings above.
+ */
+export declare function sanitizeSpecialistFindings(items: unknown, categoryId: string): Finding[];
 export declare function hasCriticalFindings(review: StructuredReview): boolean;
 export declare function sortFindingsForReview(findings: Finding[]): Finding[];
 /**

@@ -30,10 +30,14 @@ export const ALLOWED_EXTENSIONS = new Set([
   // Rust
   '.rs',
 
-  // Java / Kotlin
+  // Java / Kotlin / JVM
   '.java',
   '.kt',
   '.kts',
+  '.scala',
+  '.groovy',
+  '.gradle',
+  '.properties',
 
   // C#
   '.cs',
@@ -46,6 +50,22 @@ export const ALLOWED_EXTENSIONS = new Set([
 
   // Swift
   '.swift',
+
+  // Dart
+  '.dart',
+
+  // Elixir
+  '.ex',
+  '.exs',
+
+  // Objective-C
+  '.m',
+  '.mm',
+
+  // Lua / Perl
+  '.lua',
+  '.pl',
+  '.pm',
 
   // Shell
   '.sh',
@@ -74,15 +94,26 @@ export const ALLOWED_EXTENSIONS = new Set([
   // SQL
   '.sql',
 
+  // Schemas / IDLs
+  '.proto',
+  '.graphql',
+  '.gql',
+  '.prisma',
+
   // Dockerfiles & infra
   '.dockerfile',
   '.tf',
+  '.tfvars',
   '.hcl',
 ]);
 
 /**
- * Filenames (no extension match) that should always be reviewed.
- * These are matched exactly against the basename.
+ * Filenames whose extension is absent or not in ALLOWED_EXTENSIONS but which are
+ * still worth reviewing. Matched exactly against the basename.
+ *
+ * Keep this in sync with FILE_RULES in ./rules.ts and the path patterns in
+ * context/diff/scorer.ts — a file those declare reviewable but that fails
+ * isAllowedFile() is silently dropped before scoring ever runs.
  */
 export const ALLOWED_FILENAMES = new Set([
   'Dockerfile',
@@ -91,9 +122,15 @@ export const ALLOWED_FILENAMES = new Set([
   'Procfile',
   'Gemfile',
   'Rakefile',
+  'CODEOWNERS',
+  'go.mod',
   '.eslintrc',
   '.prettierrc',
   '.babelrc',
+  // Scored 0.35 by the risk scorer — committed placeholders leak real secrets often enough to review.
+  '.env.example',
+  '.env.sample',
+  '.env.template',
 ]);
 
 /** Returns true if the file should be included for review based on its extension or name. */

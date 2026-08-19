@@ -27,5 +27,9 @@ export interface ReviewResult {
     tokensUsed: number;
     inputTokens: number;
     outputTokens: number;
+    /** Total LLM calls including tool-loop hops and caller subagents. */
+    apiCalls: number;
+    /** Per-specialist outcome, used for run history and failure reporting. */
+    specialistResults: SpecialistResult[];
 }
 //# sourceMappingURL=types.d.ts.map

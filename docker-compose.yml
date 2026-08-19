@@ -1,0 +1,52 @@
+# Local history database for the AI PR Reviewer.
+#
+# Provides a Supabase-compatible PostgREST API so SUPABASE_URL / SUPABASE_KEY
+# in .env work against localhost during `npm run local-review`.
+#
+# Usage:
+#   docker compose up -d
+#   # wait until healthy, then:
+#   npm run local-review -- --repo owner/name --pr 123
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: pr-review-history-db
+    environment:
+      POSTGRES_DB: pr_review_history
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pr_review_history_data:/var/lib/postgresql/data
+      - ./docker/history/01-roles.sql:/docker-entrypoint-initdb.d/01-roles.sql:ro
+      - ./src/history/schema.sql:/docker-entrypoint-initdb.d/02-schema.sql:ro
+      - ./docker/history/03-grants.sql:/docker-entrypoint-initdb.d/03-grants.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pr_review_history"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  rest:
+    image: postgrest/postgrest:v12.2.8
+    container_name: pr-review-history-rest
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://authenticator:postgres@db:5432/pr_review_history
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      # Must match the HMAC used to sign SUPABASE_KEY in .env / .env.example.
+      # PostgREST 12 otherwise treats some secrets as base64 and rejects the JWT
+      # with PGRST301 / JWSInvalidSignature.
+      PGRST_JWT_SECRET: super-secret-jwt-token-with-at-least-32-characters-long
+      PGRST_JWT_SECRET_IS_BASE64: "false"
+      PGRST_DB_EXTRA_SEARCH_PATH: public
+    ports:
+      - "54321:3000"
+
+volumes:
+  pr_review_history_data:

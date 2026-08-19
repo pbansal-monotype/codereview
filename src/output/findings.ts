@@ -173,11 +173,20 @@ export function buildJudgeReviewFromDedup(findings: Finding[]): StructuredReview
 export function parseSpecialistFindings(raw: string, categoryId: string): Finding[] {
   const json = extractJson(raw);
   const parsed = JSON.parse(json) as { findings?: unknown[] };
+  return sanitizeSpecialistFindings(parsed.findings, categoryId);
+}
+
+/**
+ * Validate and normalize already-parsed specialist findings.
+ * Every specialist path must run findings through this — the tool loop returns
+ * pre-parsed objects, so it cannot rely on parseSpecialistFindings above.
+ */
+export function sanitizeSpecialistFindings(items: unknown, categoryId: string): Finding[] {
   const findings: Finding[] = [];
 
-  if (!Array.isArray(parsed.findings)) return findings;
+  if (!Array.isArray(items)) return findings;
 
-  for (const item of parsed.findings) {
+  for (const item of items) {
     if (!item || typeof item !== 'object') continue;
     const f = item as Record<string, unknown>;
     const severity = String(f.severity ?? '').toLowerCase();
@@ -193,7 +202,7 @@ export function parseSpecialistFindings(raw: string, categoryId: string): Findin
     if (!f.file || typeof f.file !== 'string') continue;
 
     findings.push({
-      category: categoryId,
+      category: typeof f.category === 'string' && f.category ? f.category : categoryId,
       severity: severity as Severity,
       confidence,
       file: f.file,

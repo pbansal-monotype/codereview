@@ -1,6 +1,10 @@
 import * as core from '@actions/core';
 import { AIProvider } from '../../providers';
-import { Finding, parseSpecialistFindings } from '../../output/findings';
+import {
+  Finding,
+  parseSpecialistFindings,
+  sanitizeSpecialistFindings,
+} from '../../output/findings';
 import { TOOL_INSTRUCTIONS, TOOL_CATEGORIES, MAX_TOOL_HOPS } from '../../config/tools';
 import {
   ToolContext,
@@ -14,6 +18,26 @@ import type { ToolCallRecord, ToolLoopDebugRecorder } from '../../output/debug';
 
 export function specialistUsesToolLoop(categoryId: string): boolean {
   return TOOL_CATEGORIES.has(categoryId);
+}
+
+/**
+ * Hard cap on caller subagents dispatched per `find_references` hit. Without
+ * this, a symbol with many callers fans out to one LLM call each with no bound.
+ * Candidates are ranked by reference quality (semantic > syntactic > text-match)
+ * so the cap keeps the highest-signal callers.
+ */
+const MAX_CALLER_SUBAGENTS = 5;
+
+const REFERENCE_SOURCE_RANK: Record<ReferenceLocation['source'], number> = {
+  semantic: 0,
+  syntactic: 1,
+  'text-match': 2,
+};
+
+function rankCallersByQuality(candidates: ReferenceLocation[]): ReferenceLocation[] {
+  return [...candidates].sort(
+    (a, b) => REFERENCE_SOURCE_RANK[a.source] - REFERENCE_SOURCE_RANK[b.source],
+  );
 }
 
 interface ToolRequest {
@@ -73,8 +97,13 @@ export async function runSpecialistToolLoop(
         ? `\n\n## Caller assessments\n${formatCallerVerdicts(callerVerdicts)}`
         : '');
 
+    const loopSystemPrompt = systemPrompt + TOOL_INSTRUCTIONS;
     const response = await provider.review({
-      systemPrompt: systemPrompt + TOOL_INSTRUCTIONS,
+      systemPrompt: loopSystemPrompt,
+      // The system prompt is identical across every hop, so cache it once and
+      // let subsequent hops (and other specialists sharing the prefix) hit the
+      // provider prompt cache instead of re-billing the full prefix each time.
+      systemPromptBlocks: [{ text: loopSystemPrompt, ephemeralCache: true }],
       userPrompt: hopPrompt,
       timeoutMs: remainingMs,
     });
@@ -95,10 +124,11 @@ export async function runSpecialistToolLoop(
     }
 
     if (parsed.action === 'done') {
-      const findings = (parsed.findings ?? []).map((f) => ({
-        ...f,
-        category: f.category ?? categoryId,
-      }));
+      const findings = sanitizeSpecialistFindings(parsed.findings, categoryId);
+      const dropped = (parsed.findings?.length ?? 0) - findings.length;
+      if (dropped > 0) {
+        core.info(`[${categoryId}] Dropped ${dropped} vague/low-confidence/malformed finding(s)`);
+      }
       return { findings, tokens: { input: totalInput, output: totalOutput }, apiCalls };
     }
 
@@ -233,7 +263,18 @@ async function dispatchCallerSubagents(
   const symbol = String(toolReq.arguments?.symbol ?? 'unknown');
   const targetPath = String(toolReq.arguments?.file_path ?? 'unknown');
 
-  const tasks = candidates.map(async (caller): Promise<CallerVerdict & { tokens: TokenUsage }> => {
+  const ranked = rankCallersByQuality(candidates);
+  const assessed = ranked.slice(0, MAX_CALLER_SUBAGENTS);
+  const omitted = ranked.slice(MAX_CALLER_SUBAGENTS);
+
+  if (omitted.length > 0) {
+    core.info(
+      `[${categoryId}] Caller cap reached: assessing ${assessed.length}/${candidates.length} ` +
+      `caller(s) of "${symbol}", ${omitted.length} omitted`,
+    );
+  }
+
+  const tasks = assessed.map(async (caller): Promise<CallerVerdict & { tokens: TokenUsage }> => {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
       return {
@@ -262,6 +303,7 @@ Does this specific caller break due to the change?`;
     try {
       const response = await provider.review({
         systemPrompt,
+        systemPromptBlocks: [{ text: systemPrompt, ephemeralCache: true }],
         userPrompt,
         timeoutMs: remainingMs,
       });
@@ -293,10 +335,18 @@ Does this specific caller break due to the change?`;
     verdicts.push({ caller: r.caller, breaks: r.breaks, why: r.why });
   }
 
+  for (const caller of omitted) {
+    verdicts.push({
+      caller,
+      breaks: 'uncertain',
+      why: `Not assessed (caller cap of ${MAX_CALLER_SUBAGENTS} reached)`,
+    });
+  }
+
   return {
     verdicts,
     tokens: { input, output },
-    apiCalls: candidates.length,
+    apiCalls: assessed.length,
   };
 }
 

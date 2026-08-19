@@ -2,6 +2,7 @@
 export {
   type CategoryGuidelines,
   type ReviewConfig,
+  type HistoryConfig,
   charsToTokens,
   tokensToChars,
   MAX_PROMPT_TOKENS,

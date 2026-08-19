@@ -68,6 +68,7 @@ export async function runSpecialistAgent(
 
     const response = await provider.review({
       systemPrompt,
+      systemPromptBlocks: [{ text: systemPrompt, ephemeralCache: true }],
       userPrompt,
       timeoutMs: TIMEOUT_MS,
     });

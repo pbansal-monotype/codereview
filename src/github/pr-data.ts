@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { shouldIgnoreFile } from '../filter';
+import { isAllowedFile, shouldIgnoreFile } from '../filter';
 import { prepareDiffForReview } from '../context/diff';
 import { MAX_FILE_SIZE } from '../config';
 import { getOctokit } from './client';
@@ -33,13 +33,35 @@ async function listAllChangedFiles(
   return filenames;
 }
 
-function partitionFiles(
-  allFiles: string[],
-  ignorePatterns: string[],
-): { reviewedFiles: string[]; ignoredFiles: string[] } {
-  const ignoredFiles = allFiles.filter((f) => shouldIgnoreFile(f, ignorePatterns));
-  const reviewedFiles = allFiles.filter((f) => !shouldIgnoreFile(f, ignorePatterns));
-  return { reviewedFiles, ignoredFiles };
+export interface FilePartition {
+  reviewedFiles: string[];
+  /** Every excluded file, whatever the reason — callers strip these from the diff. */
+  ignoredFiles: string[];
+  /** Subset of ignoredFiles rejected by the extension allowlist rather than an ignore pattern. */
+  disallowedFiles: string[];
+}
+
+export function partitionFiles(allFiles: string[], ignorePatterns: string[]): FilePartition {
+  const reviewedFiles: string[] = [];
+  const ignoredFiles: string[] = [];
+  const disallowedFiles: string[] = [];
+
+  for (const file of allFiles) {
+    if (!isAllowedFile(file)) {
+      disallowedFiles.push(file);
+      ignoredFiles.push(file);
+    } else if (shouldIgnoreFile(file, ignorePatterns)) {
+      ignoredFiles.push(file);
+    } else {
+      reviewedFiles.push(file);
+    }
+  }
+
+  return { reviewedFiles, ignoredFiles, disallowedFiles };
+}
+
+function preview(files: string[], limit = 10): string {
+  return `${files.slice(0, limit).join(', ')}${files.length > limit ? '...' : ''}`;
 }
 
 /**
@@ -154,11 +176,20 @@ export async function getPullRequestData(
     allFiles = await listAllChangedFiles(octokit, owner, repo, prNumber);
   }
 
-  const { reviewedFiles, ignoredFiles } = partitionFiles(allFiles, options.ignorePatterns);
+  const { reviewedFiles, ignoredFiles, disallowedFiles } = partitionFiles(
+    allFiles,
+    options.ignorePatterns,
+  );
 
-  if (ignoredFiles.length > 0) {
+  const disallowedSet = new Set(disallowedFiles);
+  const patternIgnored = ignoredFiles.filter((f) => !disallowedSet.has(f));
+  if (patternIgnored.length > 0) {
+    core.info(`Skipping ${patternIgnored.length} ignored file(s): ${preview(patternIgnored)}`);
+  }
+  if (disallowedFiles.length > 0) {
     core.info(
-      `Skipping ${ignoredFiles.length} ignored file(s): ${ignoredFiles.slice(0, 10).join(', ')}${ignoredFiles.length > 10 ? '...' : ''}`,
+      `Skipping ${disallowedFiles.length} file(s) with unsupported extensions: ` +
+        `${preview(disallowedFiles)}. Add the extension to ALLOWED_EXTENSIONS to review these.`,
     );
   }
 
@@ -169,7 +200,7 @@ export async function getPullRequestData(
   );
 
   if (reviewedFiles.length === 0) {
-    core.warning('No reviewable files after applying ignore patterns.');
+    core.warning('No reviewable files after applying the extension allowlist and ignore patterns.');
   }
 
   const filesToFetch = new Set(reviewedFiles);

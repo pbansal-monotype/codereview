@@ -8,7 +8,7 @@ import {
   postInlineReview,
   collectDismissedFingerprints,
 } from './github';
-import { runReview } from './agents';
+import { runReview, filterFindingsToDiff } from './agents';
 import { sanitizeErrorMessage } from './sanitize';
 import {
   createStateStore,
@@ -23,9 +23,39 @@ import {
   hasCriticalFindings,
 } from './output/findings';
 import { formatReviewMarkdown } from './output/format';
+import { buildRunRecord, createHistoryStore, type HistoryStore } from './history';
 import type { ReviewResult } from './agents/types';
+import type { BuildRecordInput } from './history';
 
 const MAX_OUTPUT_BYTES = 900_000;
+
+function githubRunContext(): BuildRecordInput['githubContext'] {
+  return {
+    runId: process.env.GITHUB_RUN_ID,
+    runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+    actor: process.env.GITHUB_ACTOR,
+    workflow: process.env.GITHUB_WORKFLOW,
+  };
+}
+
+/**
+ * Write one history row for this run. Best-effort by contract: the store
+ * swallows its own failures, and this always sets the output so downstream
+ * steps can branch on whether a row was written.
+ */
+async function recordHistory(
+  store: HistoryStore | null,
+  input: BuildRecordInput,
+): Promise<void> {
+  if (!store) {
+    core.setOutput('history_run_id', '');
+    return;
+  }
+
+  const { run, findings } = buildRunRecord(input);
+  const runId = await store.record(run, findings);
+  core.setOutput('history_run_id', runId ?? '');
+}
 
 function buildStatePayload(
   headSha: string,
@@ -63,8 +93,12 @@ async function main(): Promise<void> {
   try {
     core.info('AI PR Reviewer starting...');
 
+    const startedAt = Date.now();
     const config = loadConfig();
     core.info(`Provider: ${config.provider} | Model: ${config.model}`);
+
+    const historyStore = createHistoryStore(config.history);
+    if (historyStore) core.info('History tracking enabled (Supabase).');
 
     const provider = createProvider(config.provider, config.apiKey, config.model, config.azureEndpoint);
 
@@ -119,6 +153,8 @@ async function main(): Promise<void> {
         `(reply /dismiss on inline comments to suppress issues).`,
       );
 
+      // No lastReviewedSha passed, so this is the full PR diff — a superset of whatever
+      // (possibly incremental) diff the cached findings were originally anchored against.
       const pr = await getPullRequestData(config.githubToken, {
         ignorePatterns: config.ignorePatterns,
       });
@@ -127,7 +163,10 @@ async function main(): Promise<void> {
         fromStoredFindings(prevState.storedFindings ?? []),
         suppression.dismissedFingerprints,
       );
-      const structured = buildJudgeReviewFromDedup(cachedFindings);
+      const { structured } = filterFindingsToDiff(
+        buildJudgeReviewFromDedup(cachedFindings),
+        pr.diff,
+      );
       const categoryIds = Object.entries(config.categories)
         .filter(([, g]) => g.enabled)
         .map(([id]) => id);
@@ -146,7 +185,7 @@ async function main(): Promise<void> {
       const state = buildStatePayload(
         headSha,
         reviewCount,
-        toStoredFindings(cachedFindings),
+        toStoredFindings(structured.findings),
         dismissedFingerprints,
       );
 
@@ -168,6 +207,20 @@ async function main(): Promise<void> {
       if (stateStore) {
         await persistState(stateStore, config.stateStore, fullRepo, pr.number, state);
       }
+
+      await recordHistory(historyStore, {
+        repo: fullRepo,
+        pr,
+        config,
+        structured,
+        categories: categoryIds,
+        inputTokens: 0,
+        outputTokens: 0,
+        apiCalls: 0,
+        durationMs: Date.now() - startedAt,
+        cached: true,
+        githubContext: githubRunContext(),
+      });
 
       core.info('Review complete (cached).');
       return;
@@ -196,6 +249,19 @@ async function main(): Promise<void> {
       core.setOutput('has_critical_issues', 'false');
       core.setOutput('categories_reviewed', '');
       core.setOutput('findings_count', '0');
+      // Recorded so the history shows a no-op push rather than a gap.
+      await recordHistory(historyStore, {
+        repo: fullRepo,
+        pr,
+        config,
+        categories: [],
+        inputTokens: 0,
+        outputTokens: 0,
+        apiCalls: 0,
+        durationMs: Date.now() - startedAt,
+        cached: false,
+        githubContext: githubRunContext(),
+      });
       return;
     }
 
@@ -245,6 +311,21 @@ async function main(): Promise<void> {
     if (stateStore) {
       await persistState(stateStore, config.stateStore, fullRepo, pr.number, state);
     }
+
+    await recordHistory(historyStore, {
+      repo: fullRepo,
+      pr,
+      config,
+      structured: result.structured,
+      categories: result.categories,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      apiCalls: result.apiCalls,
+      durationMs: Date.now() - startedAt,
+      cached: false,
+      specialistResults: result.specialistResults,
+      githubContext: githubRunContext(),
+    });
 
     core.info('Review complete.');
   } catch (error: unknown) {

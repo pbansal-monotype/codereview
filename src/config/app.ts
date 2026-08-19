@@ -26,6 +26,18 @@ export interface ReviewConfig {
   stateStore: StoreType;
   stateGistId: string;
   incrementalReview: boolean;
+  /**
+   * Append-only run/finding history. Disabled unless both url and key are set;
+   * writes are best-effort and never fail the review.
+   */
+  history: HistoryConfig;
+}
+
+export interface HistoryConfig {
+  /** Supabase project URL, e.g. https://abcdefgh.supabase.co */
+  supabaseUrl: string;
+  /** Secret key (`sb_secret_...`, or the legacy `service_role` key). */
+  supabaseKey: string;
 }
 
 const DEFAULT_MODELS: Record<string, string> = {
@@ -136,6 +148,8 @@ const ENV_VAR_NAMES: Record<string, string> = {
   state_store: 'STATE_STORE',
   state_gist_id: 'STATE_GIST_ID',
   incremental_review: 'INCREMENTAL_REVIEW',
+  supabase_url: 'SUPABASE_URL',
+  supabase_key: 'SUPABASE_KEY',
 };
 
 function resolve(inputName: string, fallback = ''): string {
@@ -218,6 +232,10 @@ export function loadConfig(): ReviewConfig {
     stateStore: (resolve('state_store', 'comment-marker') as StoreType),
     stateGistId: resolve('state_gist_id'),
     incrementalReview: bool(resolve('incremental_review'), true),
+    history: {
+      supabaseUrl: resolve('supabase_url').replace(/\/+$/, ''),
+      supabaseKey: resolve('supabase_key'),
+    },
   };
 }
 
